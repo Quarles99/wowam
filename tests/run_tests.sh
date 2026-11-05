@@ -12,6 +12,7 @@ printf '## Title: Old\n## Version: 1.0\n## X-Curse-Project-ID: 400\n' > "$A/OldA
 printf '## Title: Local\n' > "$A/MyLocalHack/MyLocalHack.toc"
 
 python3 mock_cf.py 8765 & SRV=$!; sleep 1
+trap 'kill $SRV 2>/dev/null' EXIT   # never leave the mock server running if the script aborts
 pass=0; fail=0
 ok(){ if eval "$2"; then echo "PASS  $1"; pass=$((pass+1)); else echo "FAIL  $1"; fail=$((fail+1)); fi; }
 
@@ -134,9 +135,17 @@ ok "browse paging continues the ranking" 'grep -E "^3 +400 " /tmp/br2.txt | grep
 WOWAM_API_KEY=NOSEARCH $W browse | tee /tmp/br3.txt
 ok "browse works for a key that can't search" 'grep -q Questie /tmp/br3.txt && grep -q "short featured" /tmp/br3.txt'
 WOWAM_API_KEY=NOSEARCH $W search details 2>&1 | tee /tmp/br4.txt
-ok "search-less key gets a helpful search error" 'grep -q "refused the search" /tmp/br4.txt && grep -q "browse" /tmp/br4.txt'
-WOWAM_API_KEY=NOSEARCH $W install details 2>&1 | tee /tmp/br5.txt
-ok "install-by-name error points to browse / numeric ID" 'grep -q "numeric project ID" /tmp/br5.txt && grep -q "wowam browse" /tmp/br5.txt'
+ok "a key that can't browse either still finds featured addons by name" 'grep -q "Details" /tmp/br4.txt && grep -q "looked through" /tmp/br4.txt'
+WOWAM_API_KEY=NOSEARCH $W install no-such-addon 2>&1 | tee /tmp/br5.txt
+ok "unknown name explains what was scanned and what to do" 'grep -q "most popular addons I looked through" /tmp/br5.txt && grep -q "numeric project ID" /tmp/br5.txt && grep -q "wowam browse" /tmp/br5.txt'
+echo "--- local search (key that can browse but not text-search)"
+WOWAM_API_KEY=NOTEXT $W search details 2>&1 | tee /tmp/ls1.txt
+ok "search finds addons by scanning the popular catalogue" 'grep -q "Details" /tmp/ls1.txt && grep -q "looked through" /tmp/ls1.txt'
+WOWAM_API_KEY=NOTEXT $W install questie 2>&1 | tee /tmp/ls2.txt
+ok "install by slug works for such a key" '[ -f "$A/Questie/core.lua" ]'
+$W remove questie >/dev/null
+WOWAM_API_KEY=NOTEXT $W install no-such-addon 2>&1 | tee /tmp/ls3.txt
+ok "such a key gets a clear not-found message" 'grep -q "most popular addons I looked through" /tmp/ls3.txt'
 ok "browse rejects an unknown sort" '! $W browse --sort nonsense 2>/dev/null'
 
 echo "--- self-update"

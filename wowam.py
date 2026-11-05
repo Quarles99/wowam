@@ -269,6 +269,7 @@ class CurseForge:
                 "then run: wowam config --api-key YOUR_KEY  (or set WOWAM_API_KEY)")
         self.api_key = api_key
         self.timeout = timeout
+        self._pages: dict = {}  # catalogue pages already fetched for local search, so repeat lookups are free
 
     def _request(self, path: str, params: dict | None = None, body=None, retries: int = 3):
         url = API_BASE + path
@@ -316,6 +317,45 @@ class CurseForge:
                                       "(an invalid key looks the same). Use `wowam browse` (or Browse in the "
                                       "GUI) to see popular addons, or install by numeric project ID.")
             raise
+
+    def search_any(self, term: str = "", flavor: int | None = None, slug: str | None = None, page_size: int = 20,
+                   scan_pages: int = 10, scan_page_size: int = 50, scan_flavor="same") -> dict:
+        """search() when the key may search; otherwise scan the catalogue (most popular first, which browse
+        allows) and filter it locally: every word of `term` must appear in an addon's name or slug, or `slug`
+        must equal its slug exactly. Returns {'mods', 'local', 'scanned', 'truncated', 'limited'}.
+        truncated=True: the scan stopped before the end, so less popular addons may be missing."""
+        try:
+            return {"mods": self.search(term, flavor, slug, page_size), "local": False, "scanned": 0,
+                    "truncated": False, "limited": False}
+        except SearchForbidden:
+            pass
+        words = (term or "").lower().split()
+        sflavor = flavor if scan_flavor == "same" else scan_flavor  # the catalogue to scan (the game version)
+        hits, scanned, index, reached_end, limited = [], 0, 0, False, False
+        for _ in range(scan_pages):
+            key = (sflavor, index, scan_page_size)
+            if key not in self._pages:
+                self._pages[key] = self.browse("popular", sflavor, scan_page_size, index)
+            page = self._pages[key]
+            limited = limited or page["limited"]
+            for m in page["mods"]:
+                scanned += 1
+                if slug:
+                    ok = m.get("slug") == slug
+                else:
+                    hay = f"{m.get('name', '')} {m.get('slug', '')}".lower()
+                    ok = all(w in hay for w in words)
+                if ok:
+                    hits.append(m)
+            index += len(page["mods"])
+            if not page["mods"] or not page["more"]:
+                reached_end = True
+                break
+            if (slug and hits) or len(hits) >= page_size:
+                break
+        done = reached_end or bool(slug and hits) or len(hits) >= page_size
+        return {"mods": hits[:page_size], "local": True, "scanned": scanned, "truncated": not done,
+                "limited": limited}
 
     def browse(self, sort: str = "popular", flavor: int | None = None, page_size: int = 25, index: int = 0) -> dict:
         """One page of addons, most popular / recently updated / most downloaded first, for one game flavor.
@@ -472,17 +512,19 @@ class Manager:
             ref = m.group(1)
         if ref.isdigit():
             return self.cf.mod(int(ref))
-        try:
-            hits = self.cf.search(slug=ref, page_size=5)
-        except SearchForbidden:  # some API keys can read mods but not search
-            raise WowamError(f"Can't look up '{ref}' by name: this API key isn't allowed to search CurseForge. "
-                             f"Use the numeric project ID instead (shown as 'Project ID' on the addon's page), "
-                             f"or pick it from `wowam browse`.")
-        hits = [h for h in hits if h.get("slug") == ref]
+        # Keys that can't search by name still work: search_any scans the popular catalogue locally.
+        found = self.cf.search_any(slug=ref, page_size=5, scan_flavor=self.flavor)
+        hits = [h for h in found["mods"] if h.get("slug") == ref]
         if hits:
             return hits[0]
-        hits = self.cf.search(term=ref, flavor=self.flavor, page_size=5)
+        found = self.cf.search_any(term=ref, flavor=self.flavor, page_size=5)
+        hits = found["mods"]
         if not hits:
+            if found["local"]:
+                raise WowamError(
+                    f"Can't find '{ref}': this API key can't search CurseForge by name, and it isn't among the "
+                    f"{found['scanned']} most popular addons I looked through. Use the numeric project ID instead "
+                    f"(shown as 'Project ID' on the addon's page), or pick it from `wowam browse`.")
             raise WowamError(f"No CurseForge addon found for '{ref}'.")
         exact = [h for h in hits if h["name"].lower() == ref.lower()]
         if exact:
@@ -1198,7 +1240,12 @@ def main(argv=None) -> int:
             cf = CurseForge(cfg.get("api_key", ""))
             m = Manager(cfg, log=lambda *_: None) if cfg.get("addons_dir") else None
             flavor = m.flavor if m else FLAVOR_ALIASES.get(str(cfg.get("flavor")), None)
-            _print_mods(cf.search(" ".join(a.term), flavor=flavor), m)
+            found = cf.search_any(" ".join(a.term), flavor=flavor)
+            _print_mods(found["mods"], m)
+            if found["local"]:
+                print(f"\n(Your API key can't search by name, so I looked through the {found['scanned']} most "
+                      f"popular addons." + (" Less popular ones may be missing: use `wowam browse`, or install by "
+                                            "numeric project ID." if found["truncated"] else "") + ")")
             return 0
         if a.cmd == "browse":
             cf = CurseForge(cfg.get("api_key", ""))

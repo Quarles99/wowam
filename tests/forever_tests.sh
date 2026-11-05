@@ -7,6 +7,7 @@ W="python3 $ROOT/wowam.py"
 WOW="$H/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft"
 mkdir -p "$WOW/_retail_/Interface/AddOns" "$WOW/_forever_/Interface/AddOns"; A="$WOW/_forever_/Interface/AddOns"
 python3 mock_cf.py 8765 & SRV=$!; sleep 1
+trap 'kill $SRV 2>/dev/null' EXIT   # never leave the mock server running if the script aborts
 pass=0; fail=0; ok(){ if eval "$2"; then echo "PASS  $1"; pass=$((pass+1)); else echo "FAIL  $1"; fail=$((fail+1)); fi; }
 echo "--- detect"; HOME=$H $W detect | tee /tmp/d.txt
 ok "detect prefers _forever_"            'grep -q "Saved as your AddOns folder: .*_forever_" /tmp/d.txt'

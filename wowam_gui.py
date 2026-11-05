@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import sys
 import threading
 import time
 import webbrowser
@@ -492,14 +493,17 @@ class App:
         info = tk.StringVar(value="Loading popular addons…")
         ttk.Label(win, textvariable=info, padding=8, wraplength=740, justify="left").pack(fill="x")
         state = {"gen": 0, "index": 0}  # gen drops results from a request the user has since replaced
+        shown_mods: dict = {}           # item id -> mod, for the page button and right-click menu
 
         def fill(mods, append):
             if not append:
                 tree.delete(*tree.get_children())
+                shown_mods.clear()
             for h in mods:
                 iid = str(h["id"])
                 if tree.exists(iid):
                     continue
+                shown_mods[iid] = h
                 mark = "  ✓" if iid in self.mgr.installed else ""
                 if h.get("allowModDistribution") is False:
                     mark += "  (manual download)"
@@ -526,6 +530,10 @@ class App:
                     more_btn.state(["!disabled" if r.get("more") else "disabled"])
                     note = (" Your CurseForge key can't browse the whole catalogue, so this is CurseForge's "
                             "featured list." if r.get("limited") else "")
+                    if r.get("local"):
+                        note += (f" Your key can't search by name, so I looked through the {r['scanned']} most "
+                                 f"popular addons." + (" Less popular ones may be missing: paste an ID or "
+                                                       "CurseForge URL and press Install." if r.get("truncated") else ""))
                     info.set(f"{describe(len(tree.get_children()))}{note}  “Manual download” addons open their "
                              f"CurseForge page; download the zip, then use “Install from file…”.")
                 self.ui(show)
@@ -542,7 +550,7 @@ class App:
             t = term.get().strip()
             if not t:
                 return browse()
-            run(lambda: {"mods": self.mgr.cf.search(t, flavor=self.mgr.flavor), "more": False}, False,
+            run(lambda: {**self.mgr.cf.search_any(t, flavor=self.mgr.flavor), "more": False}, False,
                 lambda n: f"{n} result(s) for “{t}”.")
 
         def on_sort(*_):
@@ -556,8 +564,46 @@ class App:
             win.destroy()
             self.run_bg("Installing", lambda: self._install_refs(refs))
 
+        def page_url(iid):
+            m = shown_mods.get(iid) or {}
+            return (m.get("links") or {}).get("websiteUrl") or (
+                f"https://www.curseforge.com/wow/addons/{m['slug']}" if m.get("slug") else None)
+
+        def open_pages():
+            urls = [u for u in (page_url(i) for i in tree.selection()[:3]) if u]  # a few at most, not a tab flood
+            if not urls:
+                info.set("Select an addon first.")
+            for u in urls:
+                webbrowser.open(u)
+
+        def copy_ids():
+            win.clipboard_clear()
+            win.clipboard_append(" ".join(tree.selection()))
+
         more_btn = ttk.Button(browse_bar, text="Load more", command=lambda: browse(append=True))
         more_btn.pack(side="left")
+        ttk.Button(browse_bar, text="CurseForge page", command=open_pages).pack(side="right")
+
+        p = self.pal
+        menu = tk.Menu(win, tearoff=0, background=p["field"], foreground=p["fg"], activebackground=p["sel"],
+                       activeforeground=p["sel_fg"], borderwidth=0)
+        menu.add_command(label="Open CurseForge page", command=open_pages)
+        menu.add_command(label="Install", command=do_install)
+        menu.add_command(label="Copy project ID", command=copy_ids)
+
+        def on_right_click(event):
+            iid = tree.identify_row(event.y)
+            if not iid:
+                return
+            if iid not in tree.selection():
+                tree.selection_set(iid)
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+        for seq in (("<Button-2>", "<Control-Button-1>", "<Button-3>") if sys.platform == "darwin" else ("<Button-3>",)):
+            tree.bind(seq, on_right_click)  # macOS reports the right/secondary click differently
+
         ent.bind("<Return>", do_search)
         sort_box.bind("<<ComboboxSelected>>", on_sort)
         tree.bind("<Double-1>", lambda _: do_install())

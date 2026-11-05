@@ -83,8 +83,9 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
     def authed(self):
-        # NOSEARCH mimics a real key that can read everything except /v1/mods/search (403)
-        if self.path.startswith("/v1") and self.headers.get("x-api-key") not in ("TESTKEY", "NOSEARCH"):
+        # NOSEARCH: reads everything except /v1/mods/search (403). NOTEXT: like Will's real key, search works
+        # only without a text filter (browse), and is 403 once searchFilter or slug is given.
+        if self.path.startswith("/v1") and self.headers.get("x-api-key") not in ("TESTKEY", "NOSEARCH", "NOTEXT"):
             self.send({"error": "forbidden"}, 403); return False
         return True
 
@@ -114,6 +115,8 @@ class H(BaseHTTPRequestHandler):
                 return self.send({"error": "forbidden"}, 403)
             from urllib.parse import unquote_plus
             term = unquote_plus(q.get("searchFilter", "")).lower(); slug = q.get("slug")
+            if self.headers.get("x-api-key") == "NOTEXT" and (term or slug):
+                return self.send({"error": "forbidden"}, 403)
             if not term and not slug:  # browsing: everything, sorted, paged
                 ids = sorted(MODS, key=(lambda i: -i) if q.get("sortField") == "3" else (lambda i: -i * 1000))
                 size, idx = int(q.get("pageSize", 50)), int(q.get("index", 0))

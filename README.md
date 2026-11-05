@@ -23,7 +23,7 @@ and restarts. Nothing changes if anything looks wrong. If you run from source, t
 Choose **Skip this version** to dismiss one release, or untick the option in Settings to stop checking.
 (Self-update starts with the first release that includes it; older `wowam.exe` files need one manual download.)
 
-After that, use **Browse / Install…** to see the most popular addons (or search),  **Check for updates** / **Update all**, and **Install from file…** for the few
+After that, use **Browse / Install…** to see the most popular addons (or search; right-click an addon, or use the **CurseForge page** button, to open its page),  **Check for updates** / **Update all**, and **Install from file…** for the few
 addons whose authors don't allow outside downloads (see below).
 
 ## Setup from the command line (5 minutes)
@@ -71,7 +71,7 @@ To manage your retail install as well, add `--addons-dir ".../_retail_/Interface
 | `wowam self-update` | Check for a newer wowam (`--check` only reports; with the packaged exe it installs it after asking, or with `--yes`) |
 | `wowam config --theme dark` | GUI colors: `auto` (follows your system's dark/light setting, the default), `light` or `dark`. Also in the GUI's Settings |
 
-Some API keys can't search by name, and CurseForge then answers 403. If that happens, use `wowam browse` (or the GUI's Browse window) to find the addon, and install by numeric project ID
+Some API keys can't search by name, and CurseForge then answers 403. wowam then searches the 500 most popular addons itself, which covers nearly everything people look for. For a less popular addon, use `wowam browse` or install by numeric project ID
 (shown as "Project ID" on the addon's CurseForge page), for example `wowam install 18808`.
 
 ## Automatic updates
