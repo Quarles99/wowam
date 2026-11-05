@@ -2,6 +2,7 @@ export NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost
 cd "$(dirname "$0")"; ROOT="$(cd .. && pwd)"
 export WOWAM_API_BASE=http://127.0.0.1:8765 WOWAM_API_KEY=TESTKEY
 export XDG_CONFIG_HOME=$(mktemp -d); H=$XDG_CONFIG_HOME/h
+export WOWAM_CONFIG_DIR="$XDG_CONFIG_HOME/wowam"  # never touch the real config
 W="python3 $ROOT/wowam.py"
 WOW="$H/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft"
 mkdir -p "$WOW/_retail_/Interface/AddOns" "$WOW/_forever_/Interface/AddOns"; A="$WOW/_forever_/Interface/AddOns"
@@ -9,6 +10,7 @@ python3 mock_cf.py 8765 & SRV=$!; sleep 1
 pass=0; fail=0; ok(){ if eval "$2"; then echo "PASS  $1"; pass=$((pass+1)); else echo "FAIL  $1"; fail=$((fail+1)); fi; }
 echo "--- detect"; HOME=$H $W detect | tee /tmp/d.txt
 ok "detect prefers _forever_"            'grep -q "Saved as your AddOns folder: .*_forever_" /tmp/d.txt'
+$W config --addons-dir "$A" >/dev/null   # pin explicitly: detect may find a real install on this machine
 echo "--- install questie"; $W install questie
 ok "gets Forever file, not retail/beta"  'grep -q "forever" "$A/Questie/Questie.toc"'
 ok "flavor id cached in config"          'grep -q 88888 $XDG_CONFIG_HOME/wowam/config.json'

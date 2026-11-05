@@ -25,6 +25,7 @@ FILES = {
     1003: dict(modId=100, displayName="Details 1.2-beta", releaseType=2, folders=[("Details", "1.2b")], deps=[200]),
     2001: dict(modId=200, displayName="LibDep r5", releaseType=1, folders=[("LibDep", "r5")], deps=[]),
     3001: dict(modId=300, displayName="NoDist 2.0", releaseType=1, folders=[("NoDist", "2.0")], deps=[], nodist=True),
+    3002: dict(modId=300, displayName="NoDist 2.1", releaseType=1, folders=[("NoDist", "2.1")], deps=[], nodist=True),
     4001: dict(modId=400, displayName="OldAddon 9.9", releaseType=1, folders=[("OldAddon", "9.9")], deps=[]),
     6001: dict(modId=600, displayName="Questie retail", releaseType=1, folders=[("Questie", "retail")], deps=[]),
     6002: dict(modId=600, displayName="Questie forever", releaseType=1, folders=[("Questie", "forever")], deps=[], flavor=88888),
@@ -33,6 +34,17 @@ FILES = {
 MODS = {100: ("Details! Damage Meter", "details"), 200: ("LibDep", "libdep"),
         300: ("NoDist", "nodist"), 400: ("Old Addon", "old-addon"), 500: ("Evil", "evil"), 600: ("Questie", "questie")}
 LIVE = {100: [1001], 200: [2001], 300: [3001], 400: [4001], 500: [5001], 600: [6001, 6002]}  # visible files per mod
+
+
+GH = {"acme/ghaddon": "v1.0", "acme/multizip": "v1.0", "acme/nozip": "v1.0"}  # repo -> latest tag
+
+
+def gh_release(repo):
+    tag = GH[repo]
+    names = {"acme/ghaddon": [f"GhAddon-{tag}.zip", "release.json"], "acme/multizip": ["A-nolib.zip", "A.zip"],
+             "acme/nozip": []}[repo]
+    return {"tag_name": tag, "published_at": "2026-11-03T00:00:00Z",
+            "assets": [{"name": n, "browser_download_url": f"{BASE}/gh/{repo.split('/')[1]}/{tag}/{n}"} for n in names]}
 
 
 def file_obj(fid):
@@ -48,7 +60,7 @@ def file_obj(fid):
 def mod_obj(mid):
     name, slug = MODS[mid]
     return {"id": mid, "gameId": 1, "name": name, "slug": slug, "summary": f"{name} summary",
-            "downloadCount": mid * 1000, "links": {"websiteUrl": f"https://www.curseforge.com/wow/addons/{slug}"},
+            "downloadCount": mid * 1000, "allowModDistribution": mid != 300, "links": {"websiteUrl": f"https://www.curseforge.com/wow/addons/{slug}"},
             "latestFilesIndexes": [{"fileId": fid, "gameVersionTypeId": FILES[fid].get("flavor", RETAIL), "releaseType": FILES[fid]["releaseType"],
                                     "gameVersion": "11.2.5", "filename": f"{fid}.zip"} for fid in LIVE[mid]]}
 
@@ -69,6 +81,10 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.authed(): return
         p, _, qs = self.path.partition("?")
+        m = re.fullmatch(r"/repos/(acme/\w+)/releases/latest", p)
+        if m: return self.send(gh_release(m[1]))
+        m = re.fullmatch(r"/gh/(\w+)/([^/]+)/(.+\.zip)", p)
+        if m: return self.send(None, raw=zip_of([("GhAddon", m[2])]), ctype="application/zip")
         q = dict(kv.split("=", 1) for kv in qs.split("&") if "=" in kv)
         if p == "/v1/games/1/version-types":
             return self.send({"data": [{"id": 517, "name": "WoW Retail", "slug": "wow_retail"},
@@ -95,6 +111,9 @@ class H(BaseHTTPRequestHandler):
         self.send({"error": "nf"}, 404)
 
     def do_POST(self):
+        if self.path == "/admin/gh_tag":  # test hook: publish a new GitHub release
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            GH[body["repo"]] = body["tag"]; return self.send({"ok": True})
         if not self.authed(): return
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         if self.path == "/v1/mods":

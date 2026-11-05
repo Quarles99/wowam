@@ -61,6 +61,38 @@ class WowamError(Exception):
     pass
 
 
+class ManualDownload(WowamError):
+    """The author disabled third-party downloads; the user has to fetch the zip themselves."""
+
+
+GITHUB_API = os.environ.get("WOWAM_GITHUB_API", "https://api.github.com").rstrip("/")
+
+
+def _github_latest(repo: str) -> dict:
+    """Latest non-prerelease GitHub release for 'owner/repo'. GITHUB_TOKEN (optional) raises the rate limit."""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}
+    if os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
+    req = urllib.request.Request(f"{GITHUB_API}/repos/{repo}/releases/latest", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise WowamError(f"{repo}: no GitHub releases found (the author may distribute elsewhere).")
+        if e.code in (403, 429):
+            raise WowamError("GitHub rate limit hit; try again later or set GITHUB_TOKEN.")
+        raise WowamError(f"GitHub API error {e.code} for {repo}")
+    except urllib.error.URLError as e:
+        raise WowamError(f"Network error talking to GitHub: {e.reason}")
+
+
+def _version_in(version: str, text: str) -> bool:
+    """True if `version` appears in `text` as a whole token (so '2.1' doesn't match '2.10')."""
+    version = (version or "").strip().lstrip("vV")
+    return bool(version) and bool(re.search(rf"(?<![\w.]){re.escape(version)}(?![\w.])", text or "", re.I))
+
+
 # --------------------------------------------------------------------------- config
 
 def config_dir() -> Path:
@@ -70,7 +102,7 @@ def config_dir() -> Path:
         base = Path.home() / "Library" / "Application Support"
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    d = base / "wowam"
+    d = Path(os.environ["WOWAM_CONFIG_DIR"]) if os.environ.get("WOWAM_CONFIG_DIR") else base / "wowam"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -91,7 +123,7 @@ def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
     if CONFIG_PATH.exists():
         try:
-            cfg.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
+            cfg.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig")))  # -sig: tolerate editors' BOM
         except json.JSONDecodeError as e:
             raise WowamError(f"Config file is corrupt ({CONFIG_PATH}): {e}")
     if os.environ.get("WOWAM_API_KEY"):
@@ -413,7 +445,7 @@ class Manager:
         return staging, sorted(folders)
 
     def _swap_in(self, mod_id: str, staging: Path, new_folders: list[str], old_folders: list[str]):
-        backup = self.backup_root / mod_id
+        backup = self.backup_root / re.sub(r"[^\w.-]", "_", mod_id)  # 'gh:owner/repo' isn't a legal dir name
         shutil.rmtree(backup, ignore_errors=True)
         backup.mkdir(parents=True, exist_ok=True)
         moved = []
@@ -437,35 +469,110 @@ class Manager:
             shutil.rmtree(staging, ignore_errors=True)
 
     def install_file(self, mod: dict, file: dict, pinned: bool = False, channel: str | None = None):
-        mod_id = str(mod["id"])
         url = file.get("downloadUrl") or self.cf.download_url(mod["id"], file["id"])
         if not url:
-            raise WowamError(
+            raise ManualDownload(
                 f"{mod['name']}: the author has disabled third-party downloads for this addon. "
-                f"Get it from {mod.get('links', {}).get('websiteUrl') or 'CurseForge'} or the CurseForge app.")
+                f"Download it yourself from {mod.get('links', {}).get('websiteUrl') or 'its CurseForge page'}, "
+                f"then run: wowam install-file <downloaded.zip>  (wowam will keep checking it for updates).")
         self.log(f"  ↓ {mod['name']}  {file.get('displayName') or file.get('fileName')}")
         staging, new_folders = self._extract(self.cf.download(url), mod["name"])
+        self._commit(mod, staging, new_folders, file=file, pinned=pinned, channel=channel)
+
+    def _commit(self, mod: dict, staging: Path, new_folders: list[str], file: dict | None = None,
+                pinned: bool = False, channel: str | None = None, version: str | None = None,
+                extra: dict | None = None):
+        """Swap extracted folders in (with backup/rollback) and record the addon in the state file."""
+        mod_id = str(mod["id"])
         old = self.installed.get(mod_id, {}).get("folders", [])
 
         # Folders another tracked addon owned now belong to this one.
-        for other_id, other in self.installed.items():
+        for other_id, other in list(self.installed.items()):
             if other_id != mod_id:
                 overlap = set(other.get("folders", [])) & set(new_folders)
                 if overlap:
                     other["folders"] = [f for f in other["folders"] if f not in overlap]
                     self.log(f"  ! {', '.join(sorted(overlap))} moved from {other['name']} to {mod['name']}")
+                    if not other["folders"]:  # nothing left: it's been replaced (e.g. GitHub -> hand-installed)
+                        del self.installed[other_id]
+                        self.log(f"  ! {other['name']} no longer owns any folders; stopped tracking it.")
         self._swap_in(mod_id, staging, new_folders, old)
 
         prev = self.installed.get(mod_id, {})
+        file = file or {}
         self.installed[mod_id] = {
             "name": mod["name"], "slug": mod.get("slug", ""),
-            "file_id": file["id"], "version": file.get("displayName") or file.get("fileName"),
-            "file_date": file.get("fileDate", ""), "release_type": RELEASE_NAMES.get(file.get("releaseType", 1)),
+            "file_id": file.get("id"), "version": version or file.get("displayName") or file.get("fileName"),
+            "file_date": file.get("fileDate", ""),
+            "release_type": RELEASE_NAMES.get(file["releaseType"]) if file.get("releaseType") else None,
             "folders": new_folders, "pinned": pinned or prev.get("pinned", False),
             "channel": channel or prev.get("channel"), "installed_at": int(time.time()),
             "url": mod.get("links", {}).get("websiteUrl", ""),
         }
+        self.installed[mod_id].update(extra or {})
         self.save_state()
+
+    def install_local(self, path: str, mod_ref: str | None = None) -> dict:
+        """Install a zip the user downloaded by hand (for addons whose author blocks third-party downloads).
+        The CurseForge project is read from X-Curse-Project-ID in the .toc unless mod_ref is given."""
+        p = Path(path).expanduser()
+        if not p.is_file():
+            raise WowamError(f"No such file: {p}")
+        staging, folders = self._extract(p.read_bytes(), p.name)
+        try:
+            tagged: dict[str, list[str]] = {}  # project id -> folders carrying it
+            for f in folders:
+                pid = read_toc(staging / f).get("X-Curse-Project-ID", "").strip()
+                if pid.isdigit():
+                    tagged.setdefault(pid, []).append(f)
+            if mod_ref:
+                mod = self.resolve_mod(mod_ref)
+            elif tagged:
+                mod = self.cf.mod(int(max(tagged, key=lambda k: len(tagged[k]))))
+            else:
+                raise WowamError(f"{p.name}: no X-Curse-Project-ID in its .toc files; "
+                                 f"say which addon it is with --mod <slug|id|url>.")
+            try:  # identify the exact CurseForge file by its file name, so updates can be detected
+                files = self.cf.mod_files(mod["id"], self.flavor)
+            except WowamError:
+                files = []
+            match = next((f for f in files if f.get("fileName", "").lower() == p.name.lower()), None)
+            toc_ver = read_toc(staging / tagged.get(str(mod["id"]), folders)[0]).get("Version", "")
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        self.log(f"  ↓ {mod['name']}  {(match or {}).get('displayName') or p.name}  (from {p})")
+        self._commit(mod, staging, folders, file=match,
+                     version=None if match else f"{toc_ver or p.stem} (manual)",
+                     extra={"manual": True, "toc_version": toc_ver})
+        return self.installed[str(mod["id"])]
+
+    def install_github(self, spec: str, asset_pattern: str | None = None, pinned: bool = False) -> None:
+        """Install/update from the latest GitHub release zip of 'owner/repo' (or a github.com URL)."""
+        m = re.search(r"github\.com/([^/\s]+)/([^/\s?#]+)", spec) or re.fullmatch(r"([\w.-]+)/([\w.-]+)", spec.strip())
+        if not m:
+            raise WowamError(f"'{spec}' is not a GitHub repo (use owner/repo or a github.com URL).")
+        name = re.sub(r"\.git$", "", m.group(2))
+        repo = f"{m.group(1)}/{name}"
+        rel = _github_latest(repo)
+        zips = [a for a in rel.get("assets", []) if a.get("name", "").lower().endswith(".zip")]
+        if asset_pattern:
+            zips = [a for a in zips if re.search(asset_pattern, a["name"], re.I)]
+        if not zips:
+            raise WowamError(f"{repo} {rel.get('tag_name')}: the release has no matching .zip asset "
+                             f"(the author may not publish addon zips on GitHub).")
+        if len(zips) > 1:
+            raise WowamError(f"{repo} {rel.get('tag_name')} has several zips ({', '.join(a['name'] for a in zips)}); "
+                             f"pick one with --asset <regex>.")
+        asset, tag = zips[0], rel.get("tag_name") or rel.get("name") or "?"
+        key = f"gh:{repo}"
+        mod = {"id": key, "name": repo.split("/")[1], "slug": repo.split("/")[1].lower(),
+               "links": {"websiteUrl": f"https://github.com/{repo}"}}
+        self.log(f"  ↓ {mod['name']}  {tag}  (GitHub {repo})")
+        staging, folders = self._extract(self.cf.download(asset["browser_download_url"]), mod["name"])
+        self._commit(mod, staging, folders, pinned=pinned, version=tag,
+                     extra={"source": "github", "repo": repo, "tag": tag, "asset_pattern": asset_pattern,
+                            "file_date": rel.get("published_at", "")})
 
     def install(self, ref: str, channel: str | None = None, _seen=None) -> None:
         _seen = _seen if _seen is not None else set()
@@ -490,21 +597,46 @@ class Manager:
                         self.log(f"  ! could not install dependency {dep['modId']}: {e}")
 
     def check_updates(self) -> list[dict]:
-        """Return a list of {id, entry, mod, latest_file_id} for addons with a newer file."""
-        ids = [int(i) for i in self.installed]
-        if not ids:
-            return []
-        out = []
-        for mod in self.cf.mods(ids):
+        """Return [{id, entry, mod, latest_file_id, latest_version, blocked}] for addons with a newer file.
+
+        `blocked` means the author disallows third-party downloads (or it was installed by hand), so
+        wowam can report the update but the user has to download the zip and run `install-file`."""
+        out, synced = [], False
+        ids = [int(i) for i in self.installed if i.isdigit()]
+        for mod in (self.cf.mods(ids) if ids else []):
             mid = str(mod["id"])
             entry = self.installed.get(mid)
             if not entry or entry.get("pinned"):
                 continue
             ch = CHANNELS.get(entry.get("channel") or "", self.channel)
             fid = self.latest_file_id(mod, ch)
-            if fid and fid != entry.get("file_id"):
-                out.append({"id": mid, "entry": entry, "mod": mod, "latest_file_id": fid})
+            if not fid:
+                continue
+            blocked = bool(entry.get("manual") or mod.get("allowModDistribution") is False)
+            latest = self.cf.files([fid])[0] if (blocked or fid != entry.get("file_id")) else {}
+            if blocked and entry.get("file_id") is None:
+                # Installed by hand and not matched to a CurseForge file: compare the .toc version instead.
+                if _version_in(entry.get("toc_version", ""), f"{latest.get('displayName')} {latest.get('fileName')}"):
+                    entry["file_id"], synced = fid, True
+                    continue
+            if fid != entry.get("file_id"):
+                out.append({"id": mid, "entry": entry, "mod": mod, "latest_file_id": fid, "blocked": blocked,
+                            "latest_version": latest.get("displayName") or latest.get("fileName") or str(fid)})
+        for key, entry in list(self.installed.items()):
+            if entry.get("source") != "github" or entry.get("pinned"):
+                continue
+            tag = _github_latest(entry["repo"]).get("tag_name")
+            if tag and tag != entry.get("tag"):
+                out.append({"id": key, "entry": entry, "mod": None, "latest_file_id": None, "blocked": False,
+                            "latest_version": tag})
+        if synced:
+            self.save_state()
         return out
+
+    def manual_notice(self, p: dict) -> str:
+        url = p["entry"].get("url") or (p["mod"] or {}).get("links", {}).get("websiteUrl", "")
+        return (f"{p['entry']['name']}: {p['entry'].get('version')}  →  {p['latest_version']} "
+                f"(manual download: {url}, then `wowam install-file <zip>`)")
 
     def update(self, refs: list[str] | None = None) -> tuple[int, list[str]]:
         pending = self.check_updates()
@@ -514,16 +646,29 @@ class Manager:
         if not pending:
             self.log("Everything is up to date.")
             return 0, []
-        files = {f["id"]: f for f in self.cf.files([p["latest_file_id"] for p in pending])}
+        manual = [p for p in pending if p["blocked"]]
+        auto = [p for p in pending if not p["blocked"]]
+        for p in manual:
+            self.log(f"  ! needs manual download — {self.manual_notice(p)}")
+        files = {}
+        cf_ids = [p["latest_file_id"] for p in auto if p["latest_file_id"]]
+        if cf_ids:
+            files = {f["id"]: f for f in self.cf.files(cf_ids)}
         ok, failed = 0, []
-        for p in pending:
+        for p in auto:
             try:
-                self.install_file(p["mod"], files[p["latest_file_id"]])
+                if p["entry"].get("source") == "github":
+                    self.install_github(p["entry"]["repo"], p["entry"].get("asset_pattern"))
+                else:
+                    self.install_file(p["mod"], files[p["latest_file_id"]])
                 ok += 1
+            except ManualDownload as e:  # author blocked it after all: same as a manual addon
+                self.log(f"  ! {e}")
             except (WowamError, KeyError) as e:
                 failed.append(f"{p['entry']['name']}: {e}")
                 self.log(f"  ! {p['entry']['name']}: {e}")
-        self.log(f"Updated {ok} addon(s)" + (f", {len(failed)} failed." if failed else "."))
+        self.log(f"Updated {ok} addon(s)" + (f", {len(failed)} failed." if failed else ".")
+                 + (f" {len(manual)} need a manual download." if manual else ""))
         return ok, failed
 
     def remove(self, ref: str):
@@ -568,7 +713,7 @@ class Manager:
                 "name": mod["name"], "slug": mod.get("slug", ""), "file_id": None,
                 "version": f"{toc_ver} (unverified)", "file_date": "", "release_type": None,
                 "folders": [], "pinned": False, "channel": None, "installed_at": 0,
-                "url": mod.get("links", {}).get("websiteUrl", ""),
+                "url": mod.get("links", {}).get("websiteUrl", ""), "toc_version": toc_ver,
             })
             entry["folders"] = sorted(set(entry["folders"]) | set(folders))
             added += 1
@@ -638,6 +783,9 @@ def _fmt_table(rows: list[list[str]], headers: list[str]) -> str:
 
 
 def main(argv=None) -> int:
+    for stream in (sys.stdout, sys.stderr):  # piped Windows output is cp1252; don't die on arrows/accents
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     ap = argparse.ArgumentParser(prog="wowam", description="WoW addon manager (CurseForge)")
     ap.add_argument("--addons-dir", help="override the AddOns folder for this run")
     ap.add_argument("--flavor", help="override game flavor for this run (retail, classic, or numeric ID)")
@@ -652,8 +800,13 @@ def main(argv=None) -> int:
     sub.add_parser("detect", help="find WoW AddOns folders on this machine")
     sub.add_parser("flavors", help="list CurseForge WoW game-flavor IDs")
     s = sub.add_parser("search", help="search CurseForge"); s.add_argument("term", nargs="+")
-    i = sub.add_parser("install", help="install by slug, id or URL"); i.add_argument("refs", nargs="+")
+    i = sub.add_parser("install", help="install by slug, id or URL (or --github owner/repo)")
+    i.add_argument("refs", nargs="+")
     i.add_argument("--channel", choices=CHANNELS, help="per-addon channel (e.g. beta)")
+    i.add_argument("--github", action="store_true", help="refs are GitHub 'owner/repo' (latest release zip)")
+    i.add_argument("--asset", help="regex to pick the release zip when a GitHub release has several")
+    f = sub.add_parser("install-file", help="install a zip you downloaded by hand (author blocks third-party downloads)")
+    f.add_argument("files", nargs="+"); f.add_argument("--mod", help="slug/id/URL if the zip has no X-Curse-Project-ID")
     sub.add_parser("list", help="list installed addons")
     sub.add_parser("check", help="check for updates without installing")
     u = sub.add_parser("update", help="update all (or named) addons"); u.add_argument("refs", nargs="*")
@@ -726,8 +879,15 @@ def main(argv=None) -> int:
             flavor = m.flavor if m else FLAVOR_ALIASES.get(str(cfg.get("flavor")), None)
             hits = cf.search(" ".join(a.term), flavor=flavor)
             rows = [[h["id"], h["slug"], h["name"][:40], f"{h.get('downloadCount', 0):,.0f}",
+                     "manual" if h.get("allowModDistribution") is False else "auto",
                      "yes" if m and str(h["id"]) in m.installed else ""] for h in hits]
-            print(_fmt_table(rows, ["ID", "SLUG", "NAME", "DOWNLOADS", "INSTALLED"]) if rows else "No results.")
+            print(_fmt_table(rows, ["ID", "SLUG", "NAME", "DOWNLOADS", "DOWNLOAD", "INSTALLED"]) if rows else "No results.")
+            manual = [h for h in hits if h.get("allowModDistribution") is False]
+            if manual:
+                print("\nThe author blocks third-party downloads for these ('manual'). Download the zip from the "
+                      "page, then run `wowam install-file <zip>`:")
+                for h in manual:
+                    print(f"  {h['name']}: {h.get('links', {}).get('websiteUrl', '')}")
             return 0
 
         log = (lambda *_: None) if getattr(a, "quiet", False) else print
@@ -736,21 +896,29 @@ def main(argv=None) -> int:
         if a.cmd == "install":
             for ref in a.refs:
                 try:
-                    m.install(ref, channel=a.channel)
+                    if a.github or "github.com/" in ref:
+                        m.install_github(ref, asset_pattern=a.asset)
+                    else:
+                        m.install(ref, channel=a.channel)
                 except WowamError as e:
                     print(f"! {e}", file=sys.stderr)
+        elif a.cmd == "install-file":
+            for path in a.files:
+                m.install_local(path, mod_ref=a.mod)
         elif a.cmd == "list":
-            rows = [[e["name"][:36], (e.get("version") or "")[:40], e.get("release_type") or "?",
+            src = lambda e: e.get("source") or ("manual" if e.get("manual") else "curseforge")
+            rows = [[e["name"][:36], (e.get("version") or "")[:40], e.get("release_type") or "?", src(e),
                      "pinned" if e.get("pinned") else "", mid]
                     for mid, e in sorted(m.installed.items(), key=lambda kv: kv[1]["name"].lower())]
-            print(_fmt_table(rows, ["NAME", "VERSION", "TYPE", "", "ID"]) if rows else
+            print(_fmt_table(rows, ["NAME", "VERSION", "TYPE", "SOURCE", "", "ID"]) if rows else
                   "Nothing installed yet. Try `wowam scan` or `wowam install <slug>`.")
         elif a.cmd == "check":
             pending = m.check_updates()
             if not pending:
                 print("Everything is up to date.")
             for p in pending:
-                print(f"{p['entry']['name']}: {p['entry'].get('version')}  →  newer file {p['latest_file_id']}")
+                print(m.manual_notice(p) if p["blocked"] else
+                      f"{p['entry']['name']}: {p['entry'].get('version')}  →  {p['latest_version']}")
         elif a.cmd == "update":
             _, failed = m.update(a.refs or None)
             return 1 if failed else 0

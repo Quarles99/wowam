@@ -35,7 +35,7 @@ class App:
         self.buttons = []
         for text, cmd in [("Check for updates", self.check), ("Update all", self.update_all),
                           ("Update selected", self.update_selected), ("Install…", self.open_install),
-                          ("Remove", self.remove), ("Pin / Unpin", self.toggle_pin),
+                          ("Install from file…", self.install_from_file), ("Remove", self.remove), ("Pin / Unpin", self.toggle_pin),
                           ("Scan folder", self.scan), ("Open page", self.open_page)]:
             b = ttk.Button(bar, text=text, command=cmd)
             b.pack(side="left", padx=(0, 4))
@@ -171,9 +171,10 @@ class App:
             if e.get("pinned"):
                 status, tag = "Pinned", "pinned"
             elif mid in self.pending:
-                status, tag = "Update available", "update"
+                manual = self.pending[mid].get("blocked")
+                status, tag = ("Update: download manually" if manual else "Update available"), "update"
                 n_upd += 1
-            elif e.get("file_id") is None:
+            elif e.get("file_id") is None and not e.get("manual") and e.get("source") != "github":
                 status, tag = "Needs sync", "update"
             else:
                 status, tag = "Up to date", ""
@@ -196,6 +197,9 @@ class App:
             self.pending = {p["id"]: p for p in pending}
             self.log(f"[{time.strftime('%H:%M')}] {len(pending)} update(s) available."
                      if pending else f"[{time.strftime('%H:%M')}] Everything is up to date.")
+            for p in pending:
+                if p["blocked"]:
+                    self.log("  ! " + self.mgr.manual_notice(p).replace("`wowam install-file <zip>`", "“Install from file…”"))
         self._schedule_next()
         self.run_bg("Checking for updates", work, done)
 
@@ -226,6 +230,29 @@ class App:
 
     def scan(self):
         self.run_bg("Scanning AddOns folder", self.mgr.scan)
+
+    def install_from_file(self):
+        """For addons whose author blocks third-party downloads: install the zip the user downloaded."""
+        if not self.mgr and not self._init_manager():
+            return self.open_settings()
+        paths = filedialog.askopenfilenames(title="Pick the downloaded addon zip(s)",
+                                            filetypes=[("Addon zip", "*.zip"), ("All files", "*.*")])
+        if paths:
+            self.run_bg("Installing from file", lambda: [self.mgr.install_local(p) for p in paths])
+
+    def _install_refs(self, refs):
+        """Worker-thread install; a blocked addon opens its CurseForge page for a manual download."""
+        for r in refs:
+            try:
+                if "github.com/" in r:
+                    self.mgr.install_github(r)
+                else:
+                    self.mgr.install(r)
+            except wowam.ManualDownload as e:
+                self.log(f"! {e}".replace("wowam install-file <downloaded.zip>", "“Install from file…”"))
+                url = next((w for w in str(e).split() if w.startswith("https://")), "").rstrip(",.")
+                if url:
+                    webbrowser.open(url)
 
     def open_page(self):
         for i in self.selected()[:3]:
@@ -269,9 +296,12 @@ class App:
                     tree.delete(*tree.get_children())
                     for h in hits:
                         mark = "  ✓" if str(h["id"]) in self.mgr.installed else ""
+                        if h.get("allowModDistribution") is False:
+                            mark += "  (manual download)"
                         tree.insert("", "end", iid=str(h["id"]), text=h["name"] + mark,
                                     values=(f"{h.get('downloadCount', 0):,.0f}", h.get("summary", "")))
-                    info.set(f"{len(hits)} result(s). Select and press Install.")
+                    info.set(f"{len(hits)} result(s). “Manual download” addons open their CurseForge page; "
+                             f"download the zip, then use “Install from file…”.")
                 self.ui(show)
             threading.Thread(target=bg, daemon=True).start()
 
@@ -280,7 +310,7 @@ class App:
             if not refs:
                 return
             win.destroy()
-            self.run_bg("Installing", lambda: [self.mgr.install(r) for r in refs])
+            self.run_bg("Installing", lambda: self._install_refs(refs))
 
         ent.bind("<Return>", do_search)
         tree.bind("<Double-1>", lambda _: do_install())

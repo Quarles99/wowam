@@ -2,8 +2,8 @@
 cd "$(dirname "$0")"; ROOT="$(cd .. && pwd)"
 set -u
 export NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost
-export WOWAM_API_BASE=http://127.0.0.1:8765 WOWAM_API_KEY=TESTKEY
-export XDG_CONFIG_HOME=$(mktemp -d)
+export WOWAM_API_BASE=http://127.0.0.1:8765 WOWAM_API_KEY=TESTKEY WOWAM_GITHUB_API=http://127.0.0.1:8765
+export XDG_CONFIG_HOME=$(mktemp -d); export WOWAM_CONFIG_DIR="$XDG_CONFIG_HOME/wowam"  # never touch the real config
 W="python3 $ROOT/wowam.py"
 G=$(mktemp -d); A="$G/World of Warcraft/_retail_/Interface/AddOns"; mkdir -p "$A"
 # pre-existing addons: one tagged with a CurseForge id, one untagged, one Blizzard
@@ -44,6 +44,64 @@ ok "nodist reported clearly"            'grep -q "disabled third-party downloads
 echo "--- zip-slip"; $W install evil 2>&1 | tee /tmp/ev.txt
 ok "unsafe zip refused"                 'grep -q "unsafe path" /tmp/ev.txt && [ ! -e "$A/../escape.txt" ] && [ ! -d "$A/Evil" ]'
 ok "no staging dirs left behind"        '[ -z "$(ls -A "$A/.." | grep "^.wowam-")" ]'
+echo "--- manual install (author blocks downloads)"
+ok "nodist message tells how to install by hand" 'grep -q "install-file" /tmp/nd.txt && grep -q "curseforge.com/wow/addons/nodist" /tmp/nd.txt'
+ok "search flags manual-download addons" '$W search nodist | grep -q "manual"'
+mkzip(){ python3 - "$1" "$2" "$3" <<'PY'
+import sys, zipfile
+out, ver, pid = sys.argv[1:4]
+with zipfile.ZipFile(out, "w") as z:
+    z.writestr("NoDist/NoDist.toc", f"## Title: NoDist\n## Version: {ver}\n" + (f"## X-Curse-Project-ID: {pid}\n" if pid else ""))
+    z.writestr("NoDist/core.lua", f"-- {ver}\n")
+PY
+}
+M=$(mktemp -d); mkzip "$M/3001.zip" 2.0 300
+$W install-file "$M/3001.zip"
+ok "install-file installs from local zip" 'grep -q "2.0" "$A/NoDist/NoDist.toc"'
+ok "file matched to a CurseForge file (no nag)" '$W check | grep -q "up to date"'
+ok "list shows it as manual" '$W list | grep NoDist | grep -q manual'
+curl -s -XPOST localhost:8765/admin/publish -d '{"mod":300,"file":3002}' >/dev/null
+$W check | tee /tmp/mc.txt
+ok "check reports manual update + link" 'grep -q "NoDist" /tmp/mc.txt && grep -q "manual download" /tmp/mc.txt && grep -q "curseforge.com/wow/addons/nodist" /tmp/mc.txt'
+$W update > /tmp/mu.txt; mu=$?; cat /tmp/mu.txt
+ok "update does not fail on manual addon, leaves it alone" '[ $mu -eq 0 ] && grep -q "2.0" "$A/NoDist/NoDist.toc"'
+mkzip "$M/3002.zip" 2.1 300; $W install-file "$M/3002.zip"
+ok "install-file of new zip updates + backs up" 'grep -q "2.1" "$A/NoDist/NoDist.toc" && [ -d "$A/../wowam-backup/300" ]'
+ok "up to date after manual update" '$W check | grep -q "up to date"'
+mkzip "$M/renamed.zip" 2.0 300; $W install-file "$M/renamed.zip"
+ok "unmatched zip name -> outdated detected via toc version" '$W check | grep -q "NoDist"'
+mkzip "$M/other-name.zip" 2.1 300; $W install-file "$M/other-name.zip"
+ok "unmatched zip name but current version -> no nag" '$W check | grep -q "up to date"'
+mkzip "$M/untagged.zip" 1.0 ""; $W install-file "$M/untagged.zip" 2>&1 | tee /tmp/ut.txt
+ok "untagged zip asks for --mod" 'grep -q -- "--mod" /tmp/ut.txt'
+$W install-file "$M/untagged.zip" --mod nodist >/dev/null
+ok "--mod override works" 'grep -q "1.0" "$A/NoDist/NoDist.toc"'
+echo "--- github source"
+$W install --github acme/ghaddon
+ok "github install" 'grep -q "v1.0" "$A/GhAddon/GhAddon.toc"'
+ok "github listed as github" '$W list | grep -i ghaddon | grep -q github'
+ok "github up to date" '! $W check | grep -qi "ghaddon"'
+curl -s -XPOST localhost:8765/admin/gh_tag -d '{"repo":"acme/ghaddon","tag":"v1.1"}' >/dev/null
+ok "github update detected" '$W check | grep -qi "ghaddon.*v1.1"'
+$W update
+ok "github update installed + backup (sanitized dir)" 'grep -q "v1.1" "$A/GhAddon/GhAddon.toc" && [ -d "$A/../wowam-backup/gh_acme_ghaddon" ]'
+$W install --github acme/multizip 2>&1 | tee /tmp/mz.txt
+ok "several zips -> asks for --asset" 'grep -q -- "--asset" /tmp/mz.txt'
+$W install --github acme/nozip 2>&1 | tee /tmp/nz.txt
+ok "release without zip explained" 'grep -q "no matching .zip" /tmp/nz.txt'
+$W install https://github.com/acme/ghaddon >/dev/null
+ok "github.com URL accepted by install" '$W list | grep -ci ghaddon | grep -q 1'
+$W remove "gh:acme/ghaddon"
+ok "github addon removable" '[ ! -d "$A/GhAddon" ]'
+$W install --github acme/ghaddon >/dev/null
+python3 - "$M/gh-as-cf.zip" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("GhAddon/GhAddon.toc", "## Title: GhAddon\n## Version: 9\n## X-Curse-Project-ID: 200\n")
+PY
+$W install-file "$M/gh-as-cf.zip" >/dev/null
+ok "replaced github entry is dropped (no double tracking)" '! $W list | grep -q github && $W list | grep -q LibDep'
+
 echo "--- remove"; $W remove libdep
 ok "remove deletes folders"             '[ ! -d "$A/LibDep" ]'
 echo "--- bad key"; WOWAM_API_KEY=nope $W check 2>&1 | tee /tmp/bk.txt
