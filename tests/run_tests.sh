@@ -117,6 +117,12 @@ SC=$(mktemp -d)
 python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import wowam; print(wowam.create_shortcut(wowam.Path(sys.argv[2])))" "$ROOT" "$SC"
 ok "shortcut file created" '[ -n "$(ls "$SC" | grep -iE "wowam|wow addon manager")" ]'
 
+echo "--- theme"
+$W config --theme dark >/dev/null
+ok "config --theme persists" '$W config | grep -q "\"theme\": \"dark\""'
+ok "invalid theme rejected" '! $W config --theme neon 2>/dev/null'
+ok "OS dark-mode probe returns a bool" 'python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import wowam; print(wowam.system_prefers_dark())" "$ROOT" | grep -qE "^(True|False)$"'
+
 echo "--- remove"; $W remove libdep
 ok "remove deletes folders"             '[ ! -d "$A/LibDep" ]'
 echo "--- bad key"; WOWAM_API_KEY=nope $W check 2>&1 | tee /tmp/bk.txt

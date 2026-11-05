@@ -2,6 +2,7 @@
 """Tkinter front-end for wowam. Run: python wowam_gui.py  (or: python wowam.py gui)"""
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -16,11 +17,39 @@ except ImportError:  # e.g. Fedora/Bazzite without python3-tkinter
 
 import wowam
 
+# Colors are plain data so both themes stay easy to tweak. Text/background pairs are all >= 4.5:1 contrast.
+PALETTES = {
+    "light": dict(bg="#f3f3f3", fg="#1f1f1f", field="#ffffff", btn="#e4e4e4", btn_active="#d4d4d4",
+                  border="#c4c4c4", sel="#cfe3f7", sel_fg="#000000", accent="#1a6fd1", muted="#5f5f5f",
+                  error="#b00020", update="#9a5b00", pinned="#707070"),
+    "dark": dict(bg="#1e1f22", fg="#e6e6e6", field="#2b2d31", btn="#3a3c41", btn_active="#4b4e55",
+                 border="#4b4e55", sel="#2d4f7c", sel_fg="#ffffff", accent="#5b9cf5", muted="#9a9da3",
+                 error="#ff7b7b", update="#e5a63a", pinned="#8f9298"),
+}
+
+
+def set_dark_titlebar(win, dark: bool) -> None:
+    """Windows 10/11: make the native title bar match the theme. Silently does nothing elsewhere."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        win.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        val = ctypes.c_int(1 if dark else 0)
+        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (19 on early Windows 10 builds)
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(val), ctypes.sizeof(val)) == 0:
+                break
+    except Exception:
+        pass
+
 
 class App:
     def __init__(self, root):
         self.root = root
         self.cfg = wowam.load_config()
+        self.theme_name = None
+        self.pal = PALETTES["light"]
         self.mgr: wowam.Manager | None = None
         self.pending: dict[str, dict] = {}
         self.busy = False
@@ -60,8 +89,6 @@ class App:
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        self.tree.tag_configure("update", foreground="#c47a00")
-        self.tree.tag_configure("pinned", foreground="#777777")
         pane.add(tree_frame, weight=4)
 
         log_frame = ttk.Frame(pane)
@@ -72,6 +99,7 @@ class App:
         self.status = tk.StringVar(value="Ready")
         ttk.Label(root, textvariable=self.status, anchor="w", padding=(8, 4)).pack(fill="x")
 
+        self.apply_theme()
         root.after(100, self._drain)
         root.after(1000, self._tick)
         if self._init_manager():
@@ -80,6 +108,80 @@ class App:
         else:
             self.status.set("Not set up yet.")
             root.after(300, self.setup)
+
+    # ------------------------------------------------------------ theme
+    def resolve_theme(self) -> str:
+        t = str(self.cfg.get("theme") or "auto").lower()
+        if t == "auto":
+            return "dark" if wowam.system_prefers_dark() else "light"
+        return t if t in PALETTES else "light"
+
+    def style_window(self, win):
+        """Give a dialog the current theme's background and title bar (call right after creating it)."""
+        win.configure(background=self.pal["bg"])
+        set_dark_titlebar(win, self.theme_name == "dark")
+
+    def apply_theme(self):
+        """(Re)style every widget. Cheap no-op when the resolved theme hasn't changed."""
+        name = self.resolve_theme()
+        if name == self.theme_name:
+            return
+        self.theme_name = name
+        p = self.pal = PALETTES[name]
+        s = ttk.Style()
+        try:
+            s.theme_use("clam")  # the only built-in theme whose colors we can fully control
+        except tk.TclError:
+            pass
+        s.configure(".", background=p["bg"], foreground=p["fg"], fieldbackground=p["field"],
+                    troughcolor=p["field"], bordercolor=p["border"], lightcolor=p["bg"], darkcolor=p["bg"],
+                    selectbackground=p["sel"], selectforeground=p["sel_fg"], insertcolor=p["fg"],
+                    focuscolor=p["accent"])
+        s.map(".", foreground=[("disabled", p["muted"])])
+        s.configure("TButton", background=p["btn"], lightcolor=p["btn"], darkcolor=p["btn"], padding=(8, 3))
+        s.map("TButton", background=[("disabled", p["bg"]), ("active", p["btn_active"])],
+              bordercolor=[("focus", p["accent"])])
+        for w in ("TEntry", "TCombobox"):
+            s.configure(w, fieldbackground=p["field"], foreground=p["fg"], lightcolor=p["field"],
+                        darkcolor=p["field"], arrowcolor=p["fg"])
+        s.map("TEntry", fieldbackground=[("disabled", p["bg"])])
+        s.map("TCombobox", fieldbackground=[("readonly", p["field"]), ("disabled", p["bg"])],
+              foreground=[("readonly", p["fg"])], background=[("active", p["btn_active"])])
+        s.configure("TCombobox", background=p["btn"])
+        for w in ("TCheckbutton", "TRadiobutton"):
+            # clam draws the tick/dot with indicatorforeground (black by default: invisible on dark)
+            s.configure(w, indicatorbackground=p["field"], indicatorforeground=p["accent"],
+                        upperbordercolor=p["border"], lowerbordercolor=p["border"])
+            s.map(w, indicatorforeground=[("disabled", p["muted"])],
+                  indicatorbackground=[("pressed", p["btn_active"]), ("disabled", p["bg"])],
+                  background=[("active", p["bg"])])
+        s.configure("TLabelframe", background=p["bg"], bordercolor=p["border"])
+        s.configure("TLabelframe.Label", background=p["bg"], foreground=p["fg"])
+        s.configure("Treeview", background=p["field"], fieldbackground=p["field"], foreground=p["fg"],
+                    rowheight=24)
+        s.map("Treeview", background=[("selected", p["sel"])], foreground=[("selected", p["sel_fg"])])
+        s.configure("Treeview.Heading", background=p["btn"], foreground=p["fg"], relief="flat",
+                    lightcolor=p["btn"], darkcolor=p["btn"])
+        s.map("Treeview.Heading", background=[("active", p["btn_active"])])
+        s.configure("TScrollbar", background=p["btn"], arrowcolor=p["fg"], lightcolor=p["btn"],
+                    darkcolor=p["btn"], troughcolor=p["field"])
+        s.map("TScrollbar", background=[("active", p["btn_active"])])
+        s.configure("TPanedwindow", background=p["bg"])
+        s.configure("Sash", background=p["border"])
+        # classic tk widgets and the combobox drop-down list ignore ttk styles
+        self.root.option_add("*TCombobox*Listbox.background", p["field"])
+        self.root.option_add("*TCombobox*Listbox.foreground", p["fg"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", p["sel"])
+        self.root.option_add("*TCombobox*Listbox.selectForeground", p["sel_fg"])
+        self.logbox.configure(background=p["field"], foreground=p["fg"], insertbackground=p["fg"],
+                              selectbackground=p["sel"], selectforeground=p["sel_fg"],
+                              highlightbackground=p["border"], highlightcolor=p["accent"], relief="flat")
+        self.tree.tag_configure("update", foreground=p["update"])
+        self.tree.tag_configure("pinned", foreground=p["pinned"])
+        self.style_window(self.root)
+        for w in self.root.winfo_children():
+            if isinstance(w, tk.Toplevel):
+                self.style_window(w)
 
     # ------------------------------------------------------------ plumbing
     def log(self, msg):
@@ -150,6 +252,8 @@ class App:
             return False
 
     def _tick(self):
+        if str(self.cfg.get("theme") or "auto").lower() == "auto":
+            self.apply_theme()  # follows the OS if it flips between light and dark while we're open
         mins = int(self.cfg.get("auto_check_minutes") or 0)
         if mins > 0 and self.mgr and not self.busy and time.time() >= self.next_check:
             if self.cfg.get("auto_update"):
@@ -271,6 +375,7 @@ class App:
         if not self.mgr and not self._init_manager():
             return self.setup()
         win = tk.Toplevel(self.root)
+        self.style_window(win)
         win.title("Install addon")
         win.geometry("720x460")
         win.transient(self.root)
@@ -327,11 +432,13 @@ class App:
     # ------------------------------------------------------------ settings
     def open_settings(self):
         win = tk.Toplevel(self.root)
+        self.style_window(win)
         win.title("Settings")
         win.transient(self.root)
         f = ttk.Frame(win, padding=12)
         f.pack(fill="both", expand=True)
         v = {
+            "theme": tk.StringVar(value=str(self.cfg.get("theme") or "auto")),
             "api_key": tk.StringVar(value=self.cfg.get("api_key", "")),
             "addons_dir": tk.StringVar(value=self.cfg.get("addons_dir", "")),
             "flavor": tk.StringVar(value=str(self.cfg.get("flavor", "auto"))),
@@ -374,6 +481,7 @@ class App:
         row("AddOns folder", dir_row, ttk.Button(f, text="Detect", command=detect))
         row("Game flavor", ttk.Combobox(f, textvariable=v["flavor"], values=["auto", "forever", "retail", "classic"]))
         row("Release channel", ttk.Combobox(f, textvariable=v["channel"], values=list(wowam.CHANNELS), state="readonly"))
+        row("Theme", ttk.Combobox(f, textvariable=v["theme"], values=list(wowam.THEMES), state="readonly"))
         row("Auto-check every (min, 0 = off)", ttk.Entry(f, textvariable=v["auto_check_minutes"], width=8))
         row("", ttk.Checkbutton(f, text="Install updates automatically (not just notify)", variable=v["auto_update"]))
         row("", ttk.Checkbutton(f, text="Install required dependencies", variable=v["install_dependencies"]))
@@ -404,6 +512,7 @@ class App:
                 self.cfg[k] = val.strip() if isinstance(val, str) else val
             wowam.save_config(self.cfg)
             win.destroy()
+            self.apply_theme()
             if self._init_manager():
                 self.pending.clear()
                 self.refresh_list()
@@ -431,6 +540,7 @@ class SetupWizard:
     def __init__(self, app: "App"):
         self.app = app
         self.win = tk.Toplevel(app.root)
+        app.style_window(self.win)
         self.win.title("Welcome to wowam")
         self.win.geometry("660x480")
         self.win.transient(app.root)
@@ -472,7 +582,7 @@ class SetupWizard:
         ttk.Label(self.body, text=text, wraplength=600, justify="left", **kw).pack(anchor="w", pady=2)
 
     def footer_msg(self):
-        ttk.Label(self.body, textvariable=self.msg, foreground="#b00020", wraplength=600,
+        ttk.Label(self.body, textvariable=self.msg, foreground=self.app.pal["error"], wraplength=600,
                   justify="left").pack(anchor="w", pady=(10, 0))
 
     # -- pages
@@ -494,7 +604,7 @@ class SetupWizard:
         shown = tk.BooleanVar(value=False)
         ttk.Checkbutton(row, text="Show", variable=shown,
                         command=lambda: ent.configure(show="" if shown.get() else "•")).pack(side="left", padx=6)
-        self.para("Your key is stored only on this computer.", foreground="#666666")
+        self.para("Your key is stored only on this computer.", foreground=self.app.pal["muted"])
         self.footer_msg()
 
     def page_wow(self):
@@ -541,7 +651,7 @@ class SetupWizard:
                 (self.shortcut, "Put a shortcut on my desktop")]:
             ttk.Checkbutton(self.body, text=text, variable=var).pack(anchor="w", pady=3)
         self.para("Addons whose authors block outside downloads can still be added with “Install from file…” "
-                  "after you download them from CurseForge yourself.", foreground="#666666")
+                  "after you download them from CurseForge yourself.", foreground=self.app.pal["muted"])
         self.footer_msg()
 
     # -- navigation

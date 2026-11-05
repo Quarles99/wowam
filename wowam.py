@@ -129,7 +129,38 @@ DEFAULT_CONFIG = {
     "install_dependencies": True,
     "auto_check_minutes": 60,
     "auto_update": False,
+    "theme": "auto",  # GUI colors: auto (follow the OS), light or dark
 }
+THEMES = ("auto", "light", "dark")
+
+
+def system_prefers_dark() -> bool:
+    """Best-effort check of whether the OS asks for dark apps. Never raises; False when unsure."""
+    try:
+        if os.name == "nt":
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+                return winreg.QueryValueEx(k, "AppsUseLightTheme")[0] == 0
+        if sys.platform == "darwin":
+            r = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"],
+                               capture_output=True, text=True, timeout=3)
+            return r.stdout.strip().lower() == "dark"
+        if "dark" in os.environ.get("GTK_THEME", "").lower():
+            return True
+        if shutil.which("gsettings"):
+            for key in ("color-scheme", "gtk-theme"):
+                r = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", key],
+                                   capture_output=True, text=True, timeout=3)
+                if "dark" in r.stdout.lower():  # 'prefer-dark' or e.g. 'Adwaita-dark'
+                    return True
+        kde = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "kdeglobals"
+        if kde.is_file():  # KDE Plasma (e.g. Bazzite KDE): ColorScheme=BreezeDark
+            m = re.search(r"^ColorScheme\s*=\s*(.+)$", kde.read_text(errors="replace"), re.M)
+            return bool(m and "dark" in m.group(1).lower())
+    except Exception:
+        pass
+    return False
 
 
 def load_config() -> dict:
@@ -860,6 +891,7 @@ def main(argv=None) -> int:
     c.add_argument("--api-key"); c.add_argument("--addons-dir", dest="set_dir")
     c.add_argument("--flavor", dest="set_flavor"); c.add_argument("--channel", choices=CHANNELS)
     c.add_argument("--deps", choices=["on", "off"], help="auto-install required dependencies")
+    c.add_argument("--theme", choices=THEMES, help="GUI colors (auto follows the OS)")
 
     sub.add_parser("detect", help="find WoW AddOns folders on this machine")
     sub.add_parser("flavors", help="list CurseForge WoW game-flavor IDs")
@@ -900,7 +932,7 @@ def main(argv=None) -> int:
         if a.cmd == "config":
             changed = False
             for key, val in (("api_key", a.api_key), ("addons_dir", a.set_dir),
-                             ("flavor", a.set_flavor), ("channel", a.channel)):
+                             ("flavor", a.set_flavor), ("channel", a.channel), ("theme", a.theme)):
                 if val is not None:
                     cfg[key] = val; changed = True
             if a.deps:

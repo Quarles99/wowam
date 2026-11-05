@@ -61,6 +61,7 @@ To manage your retail install as well, add `--addons-dir ".../_retail_/Interface
 | `wowam list` / `remove` / `pin` / `unpin` | Self-explanatory (`list` shows each addon's source: curseforge, github or manual) |
 | `wowam gui` | Open the graphical manager |
 | `wowam shortcut` | Put a desktop shortcut that opens the graphical manager |
+| `wowam config --theme dark` | GUI colors: `auto` (follows your system's dark/light setting, the default), `light` or `dark`. Also in the GUI's Settings |
 
 Some API keys can't use `search`, and CurseForge then answers 403. If that happens, install by numeric project ID
 (shown as "Project ID" on the addon's CurseForge page), for example `wowam install 18808`.
