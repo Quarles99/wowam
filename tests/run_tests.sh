@@ -112,6 +112,11 @@ ok "replaced github entry is dropped (no double tracking)" '! $W list | grep -q 
 echo "--- failed swap rolls back"
 ok "locked/failed folder swap restores previous version" 'python3 test_rollback.py | grep -q "^ok"'
 
+echo "--- desktop shortcut"
+SC=$(mktemp -d)
+python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import wowam; print(wowam.create_shortcut(wowam.Path(sys.argv[2])))" "$ROOT" "$SC"
+ok "shortcut file created" '[ -n "$(ls "$SC" | grep -iE "wowam|wow addon manager")" ]'
+
 echo "--- remove"; $W remove libdep
 ok "remove deletes folders"             '[ ! -d "$A/LibDep" ]'
 echo "--- bad key"; WOWAM_API_KEY=nope $W check 2>&1 | tee /tmp/bk.txt

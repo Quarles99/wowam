@@ -11,6 +11,9 @@ The owner is Will. He runs it on Windows and sometimes on Bazzite Linux (he dual
   - `Manager` handles state, install, update, remove, scan, pin and flavor resolution, plus `install_local` (hand-downloaded zips) and `install_github`.
   - `schedule()` / `unschedule()` set up the OS-level auto-update job: Task Scheduler `wowam-update` on Windows, a systemd user timer on Linux.
 - `wowam_gui.py` is the Tkinter front-end. Network calls run on worker threads, and UI updates go through a queue drained by `root.after`. Never touch Tk widgets from a worker thread.
+  - `SetupWizard` is the first-run flow (key check on a worker thread → pick WoW folder → finish options). `App.setup()` opens it whenever nothing is configured; Settings stays for details.
+  - `wowam.py` has `FROZEN` (running as a PyInstaller exe): `_self_cmd()`, `schedule()` and `create_shortcut()` must work without a separate Python or script path, and a no-argument exe launch opens the GUI.
+- `.github/workflows/release.yml` builds `wowam.exe` with PyInstaller (build-time tool only) on a `v*` tag and attaches it to a GitHub Release. **Not yet run**; it was written without a local PyInstaller build.
 - `wowam.bat` is the Windows launcher: it verifies Python really runs (the Microsoft Store `python` stub doesn't count), offers a winget install if Python is missing, opens the GUI with no arguments, and otherwise forwards arguments. Keep it CRLF (`.gitattributes` enforces it).
 - `tests/mock_cf.py` is a fake CurseForge + GitHub API. `tests/run_tests.sh` has the core checks, `tests/forever_tests.sh` the Forever checks, and `tests/test_rollback.py` (run from `run_tests.sh`) checks that a failed folder swap restores the old version.
   Run both scripts after any change: `bash tests/run_tests.sh && bash tests/forever_tests.sh`. They need bash, python3 and curl (use Git Bash or WSL on Windows).

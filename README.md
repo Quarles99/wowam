@@ -3,7 +3,24 @@
 A small, dependency-free WoW addon manager that uses the **official CurseForge API**.
 It has a CLI and a GUI and works on Windows, Linux (including Wine/Proton/Lutris installs) and macOS.
 
-## Setup (5 minutes)
+## Easy install (no command line)
+
+**Windows, easiest:** download `wowam.exe` from the [latest Release](../../releases/latest) and double-click it. No Python needed.
+Windows may show a blue "Windows protected your PC" box because the file isn't code-signed.
+Click **More info → Run anyway**. (If you'd like to check the download, `wowam.exe.sha256` on the Release page has its checksum.)
+
+**Windows, from the source code:** click the green **Code** button → **Download ZIP**, unzip it, and double-click `wowam.bat`.
+If you don't have Python, it offers to install it for you.
+
+**Either way**, the first launch opens a short setup guide:
+1. Get a free CurseForge key (it walks you through it and checks the key works).
+2. Pick your World of Warcraft install (Retail, WoW Forever, Classic…). It finds them for you.
+3. Choose whether to include the addons you already have, and whether to add a desktop shortcut.
+
+After that, use **Install…** to find addons, **Check for updates** / **Update all**, and **Install from file…** for the few
+addons whose authors don't allow outside downloads (see below).
+
+## Setup from the command line (5 minutes)
 
 1. **Get a CurseForge API key.** Sign in at <https://console.curseforge.com>, then go to *API keys*.
    New keys may need approval from CurseForge.
@@ -43,6 +60,7 @@ To manage your retail install as well, add `--addons-dir ".../_retail_/Interface
 | `wowam install-file Auctionator-341.zip` | Install a zip you downloaded yourself. See [Addons that block third-party downloads](#addons-that-block-third-party-downloads) |
 | `wowam list` / `remove` / `pin` / `unpin` | Self-explanatory (`list` shows each addon's source: curseforge, github or manual) |
 | `wowam gui` | Open the graphical manager |
+| `wowam shortcut` | Put a desktop shortcut that opens the graphical manager |
 
 Some API keys can't use `search`, and CurseForge then answers 403. If that happens, install by numeric project ID
 (shown as "Project ID" on the addon's CurseForge page), for example `wowam install 18808`.

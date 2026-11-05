@@ -1,0 +1,56 @@
+name: Build Windows exe
+
+# Pushing a tag like v1.1.0 builds wowam.exe and attaches it to a GitHub Release.
+# "Run workflow" (manual) only builds it and keeps it as a downloadable artifact.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Build-time tool only; wowam itself stays standard-library-only.
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller==6.11.1
+
+      - name: Build
+        run: pyinstaller --onefile --windowed --name wowam --hidden-import wowam_gui wowam.py
+
+      - name: Smoke test the exe (writes a config file, proving it starts and runs)
+        shell: pwsh
+        run: |
+          $env:WOWAM_CONFIG_DIR = Join-Path $env:RUNNER_TEMP "wowam-cfg"
+          Start-Process -Wait -FilePath dist\wowam.exe -ArgumentList "config","--channel","beta"
+          $cfg = Get-Content (Join-Path $env:WOWAM_CONFIG_DIR "config.json") -Raw | ConvertFrom-Json
+          if ($cfg.channel -ne "beta") { throw "exe did not run correctly" }
+
+      - name: Checksum
+        shell: pwsh
+        run: (Get-FileHash dist\wowam.exe -Algorithm SHA256).Hash.ToLower() + "  wowam.exe" | Out-File -Encoding ascii dist\wowam.exe.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wowam-windows
+          path: |
+            dist/wowam.exe
+            dist/wowam.exe.sha256
+
+      - name: Attach to the Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/wowam.exe
+            dist/wowam.exe.sha256
+          generate_release_notes: true

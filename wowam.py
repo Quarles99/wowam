@@ -755,15 +755,52 @@ class Manager:
 
 # --------------------------------------------------------------------------- scheduling
 
+FROZEN = bool(getattr(sys, "frozen", False))  # running as a PyInstaller .exe: no separate Python or script
+
+
 def _self_cmd() -> list[str]:
-    return [sys.executable, str(Path(__file__).resolve())]
+    return [sys.executable] if FROZEN else [sys.executable, str(Path(__file__).resolve())]
+
+
+def create_shortcut(dest_dir: Path | None = None) -> Path:
+    """Put a 'WoW Addon Manager' shortcut that opens the GUI on the desktop (or in dest_dir)."""
+    exe, *rest = _self_cmd()
+    if os.name == "nt":
+        exe = exe.replace("python.exe", "pythonw.exe")  # no console window
+        q = lambda s: str(s).replace("'", "''")
+        if dest_dir is None:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                                  "[Environment]::GetFolderPath('Desktop')"], capture_output=True, text=True)
+            dest_dir = Path(out.stdout.strip() or Path.home() / "Desktop")
+        link = Path(dest_dir) / "WoW Addon Manager.lnk"
+        args = " ".join(f'"{r}"' for r in rest + ["gui"])
+        ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{q(link)}');"
+              f"$s.TargetPath='{q(exe)}';$s.Arguments='{q(args)}';"
+              f"$s.WorkingDirectory='{q(Path(sys.executable).parent if FROZEN else Path(__file__).resolve().parent)}';"
+              f"$s.Description='World of Warcraft addon manager';$s.Save()")
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True)
+        if r.returncode != 0 or not link.exists():
+            raise WowamError(f"Couldn't create the shortcut: {r.stderr.strip() or 'unknown error'}")
+        return link
+    if sys.platform.startswith("linux"):
+        if dest_dir is None:
+            desk = Path.home() / "Desktop"
+            dest_dir = desk if desk.is_dir() else Path.home() / ".local" / "share" / "applications"
+        Path(dest_dir).mkdir(parents=True, exist_ok=True)
+        link = Path(dest_dir) / "wowam.desktop"
+        link.write_text("[Desktop Entry]\nType=Application\nName=WoW Addon Manager\n"
+                        "Comment=World of Warcraft addon manager\nTerminal=false\n"
+                        "Exec=" + " ".join(f'"{c}"' for c in [exe] + rest + ["gui"]) + "\n")
+        link.chmod(0o755)
+        return link
+    raise WowamError("Creating shortcuts isn't supported on this OS.")
 
 
 def schedule(every_minutes: int) -> str:
     cmd = _self_cmd() + ["update", "--quiet"]
     if os.name == "nt":
         exe = cmd[0].replace("python.exe", "pythonw.exe")  # no console window popping up
-        tr = f'"{exe}" "{cmd[1]}" update --quiet'
+        tr = " ".join(f'"{c}"' for c in [exe] + cmd[1:-2]) + " update --quiet"
         subprocess.run(["schtasks", "/Create", "/F", "/SC", "MINUTE", "/MO", str(every_minutes),
                         "/TN", "wowam-update", "/TR", tr], check=True)
         return f"Windows Task Scheduler task 'wowam-update' runs every {every_minutes} min."
@@ -848,7 +885,10 @@ def main(argv=None) -> int:
     sc.add_argument("--every", type=int, default=60, help="minutes (default 60)")
     sub.add_parser("unschedule", help="remove the auto-update job")
     sub.add_parser("gui", help="open the graphical manager")
+    sub.add_parser("shortcut", help="put a desktop shortcut that opens the graphical manager")
 
+    if FROZEN and not (argv if argv is not None else sys.argv[1:]):
+        argv = ["gui"]  # double-clicking the packaged .exe opens the GUI
     a = ap.parse_args(argv)
     cfg = load_config()
     if a.addons_dir:
@@ -896,6 +936,8 @@ def main(argv=None) -> int:
         if a.cmd == "gui":
             from wowam_gui import run_gui
             return run_gui()
+        if a.cmd == "shortcut":
+            print(f"Created {create_shortcut()}"); return 0
         if a.cmd == "flavors":
             for vt in CurseForge(cfg.get("api_key", "")).version_types():
                 print(f"{vt['id']:>7}  {vt.get('name', '')}  ({vt.get('slug', '')})")

@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
 try:
     import tkinter as tk
@@ -77,7 +78,8 @@ class App:
             self.refresh_list()
             self.check()
         else:
-            root.after(300, self.open_settings)
+            self.status.set("Not set up yet.")
+            root.after(300, self.setup)
 
     # ------------------------------------------------------------ plumbing
     def log(self, msg):
@@ -105,7 +107,7 @@ class App:
         if self.busy:
             return
         if not self.mgr and not self._init_manager():
-            self.open_settings()
+            self.setup()
             return
         self.busy = True
         self.status.set(label + "…")
@@ -126,8 +128,9 @@ class App:
                 for b in self.buttons:
                     b.state(["!disabled"])
                 if err:
-                    self.log(f"! {err}")
-                    self.status.set(err)
+                    msg = err + ("  — open Settings to check your CurseForge key." if "(403)" in err else "")
+                    self.log(f"! {msg}")
+                    self.status.set(msg)
                 else:
                     self.status.set("Ready")
                     if done:
@@ -228,13 +231,17 @@ class App:
             self.mgr.set_pinned(i, not self.mgr.installed[i].get("pinned"))
         self.refresh_list()
 
-    def scan(self):
-        self.run_bg("Scanning AddOns folder", self.mgr.scan)
+    def scan(self, then_check=False):
+        self.run_bg("Scanning AddOns folder", self.mgr.scan, (lambda _: self.check()) if then_check else None)
+
+    def setup(self):
+        """Guided first-run setup (key -> WoW folder -> finish). Settings stays available for details."""
+        SetupWizard(self)
 
     def install_from_file(self):
         """For addons whose author blocks third-party downloads: install the zip the user downloaded."""
         if not self.mgr and not self._init_manager():
-            return self.open_settings()
+            return self.setup()
         paths = filedialog.askopenfilenames(title="Pick the downloaded addon zip(s)",
                                             filetypes=[("Addon zip", "*.zip"), ("All files", "*.*")])
         if paths:
@@ -262,7 +269,7 @@ class App:
     # ------------------------------------------------------------ install dialog
     def open_install(self):
         if not self.mgr and not self._init_manager():
-            return self.open_settings()
+            return self.setup()
         win = tk.Toplevel(self.root)
         win.title("Install addon")
         win.geometry("720x460")
@@ -407,8 +414,210 @@ class App:
             else:
                 messagebox.showerror("Settings", self.status.get())
 
+        ttk.Button(f, text="Setup wizard…", command=lambda: (win.destroy(), self.setup())).grid(
+            row=r, column=0, sticky="w", pady=(10, 0))
         ttk.Button(f, text="Save", command=save).grid(row=r, column=1, sticky="e", pady=(10, 0))
         f.columnconfigure(1, weight=1)
+
+
+FLAVOR_LABELS = {"forever": "WoW Forever", "retail": "Retail", "classic": "Classic Era"}
+
+
+class SetupWizard:
+    """First-run helper: CurseForge key -> pick your WoW install -> finish. Runs on the Tk thread;
+    only the key check goes to a worker thread, and it reports back through app.ui()."""
+    KEY_URL = "https://console.curseforge.com/"
+
+    def __init__(self, app: "App"):
+        self.app = app
+        self.win = tk.Toplevel(app.root)
+        self.win.title("Welcome to wowam")
+        self.win.geometry("660x480")
+        self.win.transient(app.root)
+        self.win.protocol("WM_DELETE_WINDOW", self.win.destroy)
+        self.key = tk.StringVar(value=app.cfg.get("api_key", ""))
+        self.dir = tk.StringVar(value=app.cfg.get("addons_dir", ""))
+        self.adopt = tk.BooleanVar(value=True)
+        self.autocheck = tk.BooleanVar(value=int(app.cfg.get("auto_check_minutes") or 0) > 0)
+        self.autoinstall = tk.BooleanVar(value=bool(app.cfg.get("auto_update")))
+        self.shortcut = tk.BooleanVar(value=True)
+        self.msg = tk.StringVar()
+        self.body = ttk.Frame(self.win, padding=(20, 16, 20, 4))
+        self.body.pack(fill="both", expand=True)
+        nav = ttk.Frame(self.win, padding=(20, 4, 20, 14))
+        nav.pack(fill="x")
+        ttk.Button(nav, text="Cancel", command=self.win.destroy).pack(side="left")
+        self.next_btn = ttk.Button(nav, text="Next", command=self.next)
+        self.next_btn.pack(side="right")
+        self.back_btn = ttk.Button(nav, text="Back", command=self.back)
+        self.back_btn.pack(side="right", padx=6)
+        self.page = 0
+        self.show(0)
+
+    # -- layout helpers
+    def show(self, page: int):
+        self.page = page
+        for w in self.body.winfo_children():
+            w.destroy()
+        self.msg.set("")
+        self.back_btn.state(["!disabled" if page else "disabled"])
+        self.next_btn.configure(text="Finish" if page == 2 else "Next")
+        self.next_btn.state(["!disabled"])
+        [self.page_key, self.page_wow, self.page_finish][page]()
+
+    def heading(self, text):
+        ttk.Label(self.body, text=text, font=("TkDefaultFont", 14, "bold")).pack(anchor="w", pady=(0, 8))
+
+    def para(self, text, **kw):
+        ttk.Label(self.body, text=text, wraplength=600, justify="left", **kw).pack(anchor="w", pady=2)
+
+    def footer_msg(self):
+        ttk.Label(self.body, textvariable=self.msg, foreground="#b00020", wraplength=600,
+                  justify="left").pack(anchor="w", pady=(10, 0))
+
+    # -- pages
+    def page_key(self):
+        self.heading("Step 1 of 3 — Connect to CurseForge")
+        self.para("wowam downloads addons from CurseForge. That needs a free personal key, which you only "
+                  "have to set up once:")
+        self.para("1.  Click “Open CurseForge” and sign in (or create a free account).\n"
+                  "2.  Go to “API keys”, create a key and copy it.  New keys can take a little while to be approved.\n"
+                  "3.  Paste it below.")
+        ttk.Button(self.body, text="Open CurseForge", command=lambda: webbrowser.open(self.KEY_URL)).pack(
+            anchor="w", pady=8)
+        row = ttk.Frame(self.body)
+        row.pack(fill="x", pady=4)
+        ent = ttk.Entry(row, textvariable=self.key, show="•")
+        ent.pack(side="left", fill="x", expand=True)
+        ent.focus_set()
+        ent.bind("<Return>", lambda _: self.next())
+        shown = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row, text="Show", variable=shown,
+                        command=lambda: ent.configure(show="" if shown.get() else "•")).pack(side="left", padx=6)
+        self.para("Your key is stored only on this computer.", foreground="#666666")
+        self.footer_msg()
+
+    def page_wow(self):
+        self.heading("Step 2 of 3 — Find World of Warcraft")
+        found = wowam.detect_addons_dirs()
+        cur = self.dir.get()
+        if not (cur and Path(cur).is_dir()):
+            pick = next((d for d in found if "_forever_" in d.parts),
+                        next((d for d in found if "_retail_" in d.parts), found[0] if found else None))
+            self.dir.set(str(pick) if pick else "")
+        if found:
+            self.para("Pick the game version you want to manage:")
+        else:
+            self.para("I couldn't find World of Warcraft automatically. Click “Browse…” and choose the "
+                      "AddOns folder inside your game, for example\n"
+                      "World of Warcraft\\_retail_\\Interface\\AddOns   (or _forever_ for WoW Forever).")
+        self.radio_frame = ttk.Frame(self.body)
+        self.radio_frame.pack(fill="x", pady=6)
+        for d in found:
+            self._add_radio(d)
+        if self.dir.get() and Path(self.dir.get()) not in found:
+            self._add_radio(Path(self.dir.get()))
+        ttk.Button(self.body, text="Browse…", command=self.browse).pack(anchor="w", pady=4)
+        self.footer_msg()
+
+    def _add_radio(self, d: Path):
+        flavor = wowam.flavor_from_path(d)
+        label = f"{FLAVOR_LABELS.get(flavor, flavor.title() if flavor else 'Other')}    ({d})"
+        ttk.Radiobutton(self.radio_frame, text=label, value=str(d), variable=self.dir).pack(anchor="w", pady=2)
+
+    def browse(self):
+        d = filedialog.askdirectory(parent=self.win, title="Select your Interface/AddOns folder")
+        if d:
+            self.dir.set(str(Path(d)))
+            self.show(1)
+
+    def page_finish(self):
+        self.heading("Step 3 of 3 — Almost done")
+        self.para(f"wowam will manage:\n{self.dir.get()}")
+        for var, text in [
+                (self.adopt, "Include the addons I already have installed (recommended)"),
+                (self.autocheck, "Check for updates automatically while wowam is open"),
+                (self.autoinstall, "Also install those updates automatically"),
+                (self.shortcut, "Put a shortcut on my desktop")]:
+            ttk.Checkbutton(self.body, text=text, variable=var).pack(anchor="w", pady=3)
+        self.para("Addons whose authors block outside downloads can still be added with “Install from file…” "
+                  "after you download them from CurseForge yourself.", foreground="#666666")
+        self.footer_msg()
+
+    # -- navigation
+    def back(self):
+        if self.page:
+            self.show(self.page - 1)
+
+    def next(self):
+        if self.page == 0:
+            self.check_key()
+        elif self.page == 1:
+            d = self.dir.get().strip()
+            if not d or not Path(d).is_dir():
+                self.msg.set("Pick a folder first.")
+            elif Path(d).name.lower() != "addons" and not messagebox.askyesno(
+                    "Are you sure?", f"“{Path(d).name}” isn't named AddOns. Use it anyway?", parent=self.win):
+                pass
+            else:
+                self.show(2)
+        else:
+            self.finish()
+
+    def check_key(self):
+        key = self.key.get().strip()
+        if not key:
+            self.msg.set("Paste your CurseForge key first.")
+            return
+        self.msg.set("Checking your key…")
+        self.next_btn.state(["disabled"])
+
+        def bg():
+            try:
+                wowam.CurseForge(key).version_types()
+                err = None
+            except wowam.WowamError as e:
+                err = str(e)
+            self.app.ui(lambda: self.key_checked(key, err))
+        threading.Thread(target=bg, daemon=True).start()
+
+    def key_checked(self, key: str, err: str | None):
+        if not self.win.winfo_exists():
+            return
+        if err is None:
+            self.app.cfg["api_key"] = key
+            self.show(1)
+            return
+        self.next_btn.state(["!disabled"])
+        if "403" in err:
+            self.msg.set("CurseForge didn't accept that key. Make sure you copied the whole key (not your "
+                         "password), and that it has been approved.")
+        else:
+            self.msg.set(f"Couldn't check the key: {err}")
+
+    def finish(self):
+        app, cfg = self.app, self.app.cfg
+        cfg["addons_dir"] = self.dir.get().strip()
+        cfg["flavor"] = "auto"
+        cfg["auto_check_minutes"] = 60 if self.autocheck.get() else 0
+        cfg["auto_update"] = bool(self.autocheck.get() and self.autoinstall.get())
+        wowam.save_config(cfg)
+        shortcut = self.shortcut.get()
+        adopt = self.adopt.get()
+        self.win.destroy()
+        if not app._init_manager():
+            return messagebox.showerror("Setup", app.status.get())
+        if shortcut:
+            try:
+                app.log(f"Created shortcut: {wowam.create_shortcut()}")
+            except wowam.WowamError as e:
+                app.log(f"! {e}")
+        app.pending.clear()
+        app.refresh_list()
+        if adopt:
+            app.scan(then_check=True)
+        else:
+            app.check()
 
 
 def run_gui() -> int:
