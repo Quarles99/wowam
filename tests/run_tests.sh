@@ -123,6 +123,22 @@ ok "config --theme persists" '$W config | grep -q "\"theme\": \"dark\""'
 ok "invalid theme rejected" '! $W config --theme neon 2>/dev/null'
 ok "OS dark-mode probe returns a bool" 'python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import wowam; print(wowam.system_prefers_dark())" "$ROOT" | grep -qE "^(True|False)$"'
 
+echo "--- browse"
+python3 test_browse.py | tee /tmp/br0.txt
+ok "browse logic (sorts, paging, search-less key fallback)" 'grep -q "^ok" /tmp/br0.txt'
+$W browse | tee /tmp/br1.txt
+ok "browse lists the most popular first, ranked" 'grep -E "^1 +600 " /tmp/br1.txt | grep -q Questie && grep -q "Install one with" /tmp/br1.txt'
+ok "browse flags manual-download addons" 'grep -E "NoDist" /tmp/br1.txt | grep -q manual'
+$W browse --limit 2 --page 2 | tee /tmp/br2.txt
+ok "browse paging continues the ranking" 'grep -E "^3 +400 " /tmp/br2.txt | grep -q "Old Addon" && ! grep -q Questie /tmp/br2.txt'
+WOWAM_API_KEY=NOSEARCH $W browse | tee /tmp/br3.txt
+ok "browse works for a key that can't search" 'grep -q Questie /tmp/br3.txt && grep -q "short featured" /tmp/br3.txt'
+WOWAM_API_KEY=NOSEARCH $W search details 2>&1 | tee /tmp/br4.txt
+ok "search-less key gets a helpful search error" 'grep -q "refused the search" /tmp/br4.txt && grep -q "browse" /tmp/br4.txt'
+WOWAM_API_KEY=NOSEARCH $W install details 2>&1 | tee /tmp/br5.txt
+ok "install-by-name error points to browse / numeric ID" 'grep -q "numeric project ID" /tmp/br5.txt && grep -q "wowam browse" /tmp/br5.txt'
+ok "browse rejects an unknown sort" '! $W browse --sort nonsense 2>/dev/null'
+
 echo "--- self-update"
 python3 test_selfupdate.py | tee /tmp/su.txt
 ok "self-update logic (version compare, throttle, checksum, swap)" 'grep -q "^ok" /tmp/su.txt'

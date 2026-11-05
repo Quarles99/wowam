@@ -83,7 +83,8 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
     def authed(self):
-        if self.path.startswith("/v1") and self.headers.get("x-api-key") != "TESTKEY":
+        # NOSEARCH mimics a real key that can read everything except /v1/mods/search (403)
+        if self.path.startswith("/v1") and self.headers.get("x-api-key") not in ("TESTKEY", "NOSEARCH"):
             self.send({"error": "forbidden"}, 403); return False
         return True
 
@@ -109,8 +110,15 @@ class H(BaseHTTPRequestHandler):
                                        {"id": 88889, "name": "WoW Forever Beta", "slug": "wow_forever_beta"},
                                        {"id": 88888, "name": "WoW Forever", "slug": "wow_forever"}]})
         if p == "/v1/mods/search":
+            if self.headers.get("x-api-key") == "NOSEARCH":
+                return self.send({"error": "forbidden"}, 403)
             from urllib.parse import unquote_plus
             term = unquote_plus(q.get("searchFilter", "")).lower(); slug = q.get("slug")
+            if not term and not slug:  # browsing: everything, sorted, paged
+                ids = sorted(MODS, key=(lambda i: -i) if q.get("sortField") == "3" else (lambda i: -i * 1000))
+                size, idx = int(q.get("pageSize", 50)), int(q.get("index", 0))
+                return self.send({"data": [mod_obj(i) for i in ids[idx:idx + size]],
+                                  "pagination": {"index": idx, "pageSize": size, "totalCount": len(ids)}})
             hits = [mod_obj(m) for m, (n, s) in MODS.items() if (slug and s == slug) or (term and term in n.lower())]
             return self.send({"data": hits})
         m = re.fullmatch(r"/v1/mods/(\d+)", p)
@@ -137,6 +145,11 @@ class H(BaseHTTPRequestHandler):
             return self.send({"data": [mod_obj(i) for i in body["modIds"] if i in MODS]})
         if self.path == "/v1/mods/files":
             return self.send({"data": [file_obj(i) for i in body["fileIds"] if i in FILES]})
+        if self.path == "/v1/mods/featured":  # short lists, available even to keys that can't search
+            by_pop = sorted(MODS, key=lambda i: -i)
+            return self.send({"data": {"featured": [mod_obj(i) for i in (100, 600)],
+                                       "popular": [mod_obj(i) for i in by_pop[:4]],
+                                       "recentlyUpdated": [mod_obj(i) for i in by_pop[::-1][:3]]}})
         if self.path == "/admin/publish":  # test hook: make a new file live
             LIVE[body["mod"]].append(body["file"]); return self.send({"ok": True})
         self.send({"error": "nf"}, 404)

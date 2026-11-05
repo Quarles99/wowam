@@ -11,6 +11,7 @@ The owner is Will. He runs it on Windows and sometimes on Bazzite Linux (he dual
   - `Manager` handles state, install, update, remove, scan, pin and flavor resolution, plus `install_local` (hand-downloaded zips) and `install_github`.
   - `schedule()` / `unschedule()` set up the OS-level auto-update job: Task Scheduler `wowam-update` on Windows, a systemd user timer on Linux.
 - `wowam_gui.py` is the Tkinter front-end. Network calls run on worker threads, and UI updates go through a queue drained by `root.after`. Never touch Tk widgets from a worker thread.
+  - The Browse / Install window opens on `CurseForge.browse()` (popular / recently updated / most downloaded, 25 per page, "Load more"); typing in its box searches instead. Requests carry a generation counter so a slow reply can't overwrite a newer list. IDs are the tree item ids, so installing works for keys that can't search.
   - `SetupWizard` is the first-run flow (key check on a worker thread → pick WoW folder → finish options). `App.setup()` opens it whenever nothing is configured; Settings stays for details.
   - Theming: `config.theme` is `auto|light|dark`; `wowam.system_prefers_dark()` reads the OS setting (Windows registry, macOS `defaults`, GNOME/GTK settings, KDE `kdeglobals`). `App.apply_theme()` restyles ttk (clam theme) from `PALETTES`, plus the classic-tk bits ttk can't reach (log `Text`, combobox drop-downs, dialogs via `style_window`, Windows title bar via DWM). Any new dialog must call `app.style_window(win)`, and any new hard-coded color should come from `app.pal`. Auto mode re-checks the OS in `_tick`. Native message boxes stay system-colored (Tk can't theme them).
   - `wowam.py` has `FROZEN` (running as a PyInstaller exe): `_self_cmd()`, `schedule()` and `create_shortcut()` must work without a separate Python or script path, and a no-argument exe launch opens the GUI.
@@ -46,7 +47,7 @@ The owner is Will. He runs it on Windows and sometimes on Bazzite Linux (he dual
 - **`scan`** adopts existing addons through the `## X-Curse-Project-ID` line in their `.toc` files. Adopted entries get `file_id: None`, so the next `update` reinstalls them once to sync (blocked addons are compared by `.toc` version instead).
 
 ## Real-API findings
-- Will's key can read games, mods, files, categories and `mods/featured`, but **`/v1/mods/search` returns 403**. Slug and name lookups therefore fail for him; numeric IDs work. Errors say so. Another key may behave differently.
+- Will's key can read games, mods, files, categories and `mods/featured`. **`/v1/mods/search` returns 403 whenever `searchFilter` or `slug` is given** (so name and slug lookups fail; numeric IDs work), **but a search with no text filter (browse: `sortField`, paging, `gameVersionTypeId`) works** and is how `CurseForge.browse` lists the catalogue. Keys that can't do even that fall back to `mods/featured` (`limited` in the result). Possible improvement: when text search is forbidden, scan a few browse pages and filter names locally. Another key may behave differently.
 - A `cfc_pat_…` personal access token is not a Core API key (403 everywhere).
 - `mods/featured` with `gameVersionTypeId` 88568 is a handy way to list Forever addons and their `allowModDistribution` flag.
 - DBM's GitHub release zips declare a `forever` flavor (interface 16001); `release.json` lists the flavors.

@@ -67,7 +67,7 @@ class App:
         bar.pack(fill="x")
         self.buttons = []
         for text, cmd in [("Check for updates", self.check), ("Update all", self.update_all),
-                          ("Update selected", self.update_selected), ("Install…", self.open_install),
+                          ("Update selected", self.update_selected), ("Browse / Install…", self.open_install),
                           ("Install from file…", self.install_from_file), ("Remove", self.remove), ("Pin / Unpin", self.toggle_pin),
                           ("Scan folder", self.scan), ("Open page", self.open_page)]:
             b = ttk.Button(bar, text=text, command=cmd)
@@ -469,46 +469,85 @@ class App:
             return self.setup()
         win = tk.Toplevel(self.root)
         self.style_window(win)
-        win.title("Install addon")
-        win.geometry("720x460")
+        win.title("Browse and install addons")
+        win.geometry("780x540")
         win.transient(self.root)
-        top = ttk.Frame(win, padding=8)
+        top = ttk.Frame(win, padding=(8, 8, 8, 2))
         top.pack(fill="x")
         term = tk.StringVar()
         ent = ttk.Entry(top, textvariable=term)
         ent.pack(side="left", fill="x", expand=True)
         ent.focus_set()
+        sorts = {"Most popular": "popular", "Recently updated": "updated", "Most downloaded": "downloads"}
+        browse_bar = ttk.Frame(win, padding=(8, 2, 8, 4))
+        browse_bar.pack(fill="x")
+        ttk.Label(browse_bar, text="Browse:").pack(side="left")
+        sort_var = tk.StringVar(value="Most popular")
+        sort_box = ttk.Combobox(browse_bar, textvariable=sort_var, values=list(sorts), state="readonly", width=18)
+        sort_box.pack(side="left", padx=6)
         tree = ttk.Treeview(win, columns=("dl", "summary"), selectmode="extended")
         tree.heading("#0", text="Name"); tree.heading("dl", text="Downloads"); tree.heading("summary", text="Summary")
-        tree.column("#0", width=200); tree.column("dl", width=90, anchor="e"); tree.column("summary", width=400)
+        tree.column("#0", width=230); tree.column("dl", width=90, anchor="e"); tree.column("summary", width=420)
         tree.pack(fill="both", expand=True, padx=8)
-        info = tk.StringVar(value="Search by name, or paste a CurseForge URL / slug / ID and press Install.")
-        ttk.Label(win, textvariable=info, padding=8).pack(fill="x")
+        info = tk.StringVar(value="Loading popular addons…")
+        ttk.Label(win, textvariable=info, padding=8, wraplength=740, justify="left").pack(fill="x")
+        state = {"gen": 0, "index": 0}  # gen drops results from a request the user has since replaced
+
+        def fill(mods, append):
+            if not append:
+                tree.delete(*tree.get_children())
+            for h in mods:
+                iid = str(h["id"])
+                if tree.exists(iid):
+                    continue
+                mark = "  ✓" if iid in self.mgr.installed else ""
+                if h.get("allowModDistribution") is False:
+                    mark += "  (manual download)"
+                tree.insert("", "end", iid=iid, text=h["name"] + mark,
+                            values=(f"{h.get('downloadCount', 0):,.0f}", h.get("summary", "")))
+
+        def run(work, append, describe):
+            state["gen"] += 1
+            gen = state["gen"]
+            more_btn.state(["disabled"])
+            info.set("Loading…")
+
+            def bg():
+                try:
+                    r = work()
+                except wowam.WowamError as e:
+                    return self.ui(lambda: win.winfo_exists() and gen == state["gen"] and info.set(str(e)))
+
+                def show():
+                    if not win.winfo_exists() or gen != state["gen"]:
+                        return
+                    fill(r["mods"], append)
+                    state["index"] += len(r["mods"])
+                    more_btn.state(["!disabled" if r.get("more") else "disabled"])
+                    note = (" Your CurseForge key can't browse the whole catalogue, so this is CurseForge's "
+                            "featured list." if r.get("limited") else "")
+                    info.set(f"{describe(len(tree.get_children()))}{note}  “Manual download” addons open their "
+                             f"CurseForge page; download the zip, then use “Install from file…”.")
+                self.ui(show)
+            threading.Thread(target=bg, daemon=True).start()
+
+        def browse(append=False):
+            if not append:
+                state["index"] = 0
+            idx, kind = state["index"], sorts[sort_var.get()]
+            run(lambda: self.mgr.cf.browse(kind, self.mgr.flavor, 25, idx), append,
+                lambda n: f"{n} addons shown ({sort_var.get().lower()}).")
 
         def do_search(*_):
             t = term.get().strip()
             if not t:
-                return
-            info.set("Searching…")
+                return browse()
+            run(lambda: {"mods": self.mgr.cf.search(t, flavor=self.mgr.flavor), "more": False}, False,
+                lambda n: f"{n} result(s) for “{t}”.")
 
-            def bg():
-                try:
-                    hits = self.mgr.cf.search(t, flavor=self.mgr.flavor)
-                except wowam.WowamError as e:
-                    return self.ui(lambda: info.set(str(e)))
-
-                def show():
-                    tree.delete(*tree.get_children())
-                    for h in hits:
-                        mark = "  ✓" if str(h["id"]) in self.mgr.installed else ""
-                        if h.get("allowModDistribution") is False:
-                            mark += "  (manual download)"
-                        tree.insert("", "end", iid=str(h["id"]), text=h["name"] + mark,
-                                    values=(f"{h.get('downloadCount', 0):,.0f}", h.get("summary", "")))
-                    info.set(f"{len(hits)} result(s). “Manual download” addons open their CurseForge page; "
-                             f"download the zip, then use “Install from file…”.")
-                self.ui(show)
-            threading.Thread(target=bg, daemon=True).start()
+        def on_sort(*_):
+            term.set("")
+            browse()
 
         def do_install():
             refs = list(tree.selection()) or ([term.get().strip()] if term.get().strip() else [])
@@ -517,10 +556,14 @@ class App:
             win.destroy()
             self.run_bg("Installing", lambda: self._install_refs(refs))
 
+        more_btn = ttk.Button(browse_bar, text="Load more", command=lambda: browse(append=True))
+        more_btn.pack(side="left")
         ent.bind("<Return>", do_search)
+        sort_box.bind("<<ComboboxSelected>>", on_sort)
         tree.bind("<Double-1>", lambda _: do_install())
         ttk.Button(top, text="Search", command=do_search).pack(side="left", padx=4)
         ttk.Button(top, text="Install", command=do_install).pack(side="left")
+        browse()
 
     # ------------------------------------------------------------ settings
     def open_settings(self):

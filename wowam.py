@@ -57,10 +57,15 @@ def flavor_from_path(addons_dir) -> str | None:
 CHANNELS = {"release": 1, "beta": 2, "alpha": 3}
 RELEASE_NAMES = {1: "release", 2: "beta", 3: "alpha"}
 REQUIRED_DEPENDENCY = 3
+BROWSE_SORTS = {"popular": 2, "updated": 3, "downloads": 6}  # CurseForge ModsSearchSortField values
 
 
 class WowamError(Exception):
     pass
+
+
+class SearchForbidden(WowamError):
+    """CurseForge refused /mods/search for this API key (some keys can read mods but not search)."""
 
 
 class ManualDownload(WowamError):
@@ -300,10 +305,48 @@ class CurseForge:
         return self._request(f"/v1/games/{WOW_GAME_ID}/version-types")["data"]
 
     def search(self, term: str = "", flavor: int | None = None, slug: str | None = None, page_size: int = 20):
-        return self._request("/v1/mods/search", {
-            "gameId": WOW_GAME_ID, "searchFilter": term or None, "slug": slug,
-            "gameVersionTypeId": flavor, "sortField": 2, "sortOrder": "desc", "pageSize": page_size,
-        })["data"]
+        try:
+            return self._request("/v1/mods/search", {
+                "gameId": WOW_GAME_ID, "searchFilter": term or None, "slug": slug,
+                "gameVersionTypeId": flavor, "sortField": 2, "sortOrder": "desc", "pageSize": page_size,
+            })["data"]
+        except WowamError as e:
+            if "(403)" in str(e):
+                raise SearchForbidden("CurseForge refused the search for this API key. Some keys can't search "
+                                      "(an invalid key looks the same). Use `wowam browse` (or Browse in the "
+                                      "GUI) to see popular addons, or install by numeric project ID.")
+            raise
+
+    def browse(self, sort: str = "popular", flavor: int | None = None, page_size: int = 25, index: int = 0) -> dict:
+        """One page of addons, most popular / recently updated / most downloaded first, for one game flavor.
+        Returns {'mods': [...], 'more': bool, 'limited': bool}. limited=True means this key can't search, so
+        only CurseForge's short featured lists are available (and they don't page past their end)."""
+        if sort not in BROWSE_SORTS:
+            raise WowamError(f"Unknown sort '{sort}' (use: {', '.join(BROWSE_SORTS)}).")
+        try:
+            r = self._request("/v1/mods/search", {
+                "gameId": WOW_GAME_ID, "gameVersionTypeId": flavor, "sortField": BROWSE_SORTS[sort],
+                "sortOrder": "desc", "pageSize": page_size, "index": index})
+        except WowamError as e:
+            if "(403)" not in str(e):
+                raise
+            return self._browse_featured(sort, flavor, page_size, index)
+        mods = r["data"]
+        total = (r.get("pagination") or {}).get("totalCount")
+        more = index + len(mods) < total if total is not None else len(mods) == page_size
+        return {"mods": mods, "more": bool(more and index + page_size < 10000), "limited": False}
+
+    def _browse_featured(self, sort: str, flavor: int | None, page_size: int, index: int) -> dict:
+        feat = self._request("/v1/mods/featured", body={
+            "gameId": WOW_GAME_ID, "excludedModIds": [], "gameVersionTypeId": flavor})["data"]
+        pool: dict = {}
+        for section in (("recentlyUpdated",) if sort == "updated" else ("popular", "featured")):
+            for m in feat.get(section) or []:
+                pool.setdefault(m["id"], m)
+        mods = list(pool.values())
+        if sort == "downloads":
+            mods.sort(key=lambda m: m.get("downloadCount", 0), reverse=True)
+        return {"mods": mods[index:index + page_size], "more": index + page_size < len(mods), "limited": True}
 
     def mod(self, mod_id: int):
         return self._request(f"/v1/mods/{mod_id}")["data"]
@@ -431,11 +474,10 @@ class Manager:
             return self.cf.mod(int(ref))
         try:
             hits = self.cf.search(slug=ref, page_size=5)
-        except WowamError as e:
-            if "403" in str(e):  # some API keys can read mods but not search
-                raise WowamError(f"Can't look up '{ref}' by name: this API key isn't allowed to search CurseForge. "
-                                 f"Use the numeric project ID instead (shown as 'Project ID' on the addon's page).")
-            raise
+        except SearchForbidden:  # some API keys can read mods but not search
+            raise WowamError(f"Can't look up '{ref}' by name: this API key isn't allowed to search CurseForge. "
+                             f"Use the numeric project ID instead (shown as 'Project ID' on the addon's page), "
+                             f"or pick it from `wowam browse`.")
         hits = [h for h in hits if h.get("slug") == ref]
         if hits:
             return hits[0]
@@ -1014,6 +1056,24 @@ def _fmt_table(rows: list[list[str]], headers: list[str]) -> str:
     return "\n".join([line(headers), line(["-" * w for w in widths])] + [line(r) for r in rows])
 
 
+def _print_mods(hits: list, m=None, rank_from: int | None = None) -> None:
+    """Table of search/browse results; flags addons whose author blocks third-party downloads."""
+    rows = []
+    for n, h in enumerate(hits):
+        row = [h["id"], h["slug"], h["name"][:40], f"{h.get('downloadCount', 0):,.0f}",
+               "manual" if h.get("allowModDistribution") is False else "auto",
+               "yes" if m and str(h["id"]) in m.installed else ""]
+        rows.append([rank_from + n] + row if rank_from is not None else row)
+    headers = ["ID", "SLUG", "NAME", "DOWNLOADS", "DOWNLOAD", "INSTALLED"]
+    print(_fmt_table(rows, (["#"] + headers) if rank_from is not None else headers) if rows else "No results.")
+    manual = [h for h in hits if h.get("allowModDistribution") is False]
+    if manual:
+        print("\nThe author blocks third-party downloads for these ('manual'). Download the zip from the "
+              "page, then run `wowam install-file <zip>`:")
+        for h in manual:
+            print(f"  {h['name']}: {h.get('links', {}).get('websiteUrl', '')}")
+
+
 def main(argv=None) -> int:
     cleanup_after_update()
     for stream in (sys.stdout, sys.stderr):  # piped Windows output is cp1252; don't die on arrows/accents
@@ -1034,6 +1094,11 @@ def main(argv=None) -> int:
     sub.add_parser("detect", help="find WoW AddOns folders on this machine")
     sub.add_parser("flavors", help="list CurseForge WoW game-flavor IDs")
     s = sub.add_parser("search", help="search CurseForge"); s.add_argument("term", nargs="+")
+    br = sub.add_parser("browse", help="browse the most popular addons for your game version")
+    br.add_argument("--sort", choices=list(BROWSE_SORTS), default="popular",
+                    help="popular (default), updated (recently updated) or downloads (all-time)")
+    br.add_argument("--limit", type=int, default=25, help="addons per page (max 50)")
+    br.add_argument("--page", type=int, default=1)
     i = sub.add_parser("install", help="install by slug, id or URL (or --github owner/repo)")
     i.add_argument("refs", nargs="+")
     i.add_argument("--channel", choices=CHANNELS, help="per-addon channel (e.g. beta)")
@@ -1133,17 +1198,22 @@ def main(argv=None) -> int:
             cf = CurseForge(cfg.get("api_key", ""))
             m = Manager(cfg, log=lambda *_: None) if cfg.get("addons_dir") else None
             flavor = m.flavor if m else FLAVOR_ALIASES.get(str(cfg.get("flavor")), None)
-            hits = cf.search(" ".join(a.term), flavor=flavor)
-            rows = [[h["id"], h["slug"], h["name"][:40], f"{h.get('downloadCount', 0):,.0f}",
-                     "manual" if h.get("allowModDistribution") is False else "auto",
-                     "yes" if m and str(h["id"]) in m.installed else ""] for h in hits]
-            print(_fmt_table(rows, ["ID", "SLUG", "NAME", "DOWNLOADS", "DOWNLOAD", "INSTALLED"]) if rows else "No results.")
-            manual = [h for h in hits if h.get("allowModDistribution") is False]
-            if manual:
-                print("\nThe author blocks third-party downloads for these ('manual'). Download the zip from the "
-                      "page, then run `wowam install-file <zip>`:")
-                for h in manual:
-                    print(f"  {h['name']}: {h.get('links', {}).get('websiteUrl', '')}")
+            _print_mods(cf.search(" ".join(a.term), flavor=flavor), m)
+            return 0
+        if a.cmd == "browse":
+            cf = CurseForge(cfg.get("api_key", ""))
+            m = Manager(cfg, log=lambda *_: None) if cfg.get("addons_dir") else None
+            flavor = m.flavor if m else FLAVOR_ALIASES.get(str(cfg.get("flavor")), None)
+            limit, page = max(1, min(a.limit, 50)), max(1, a.page)
+            r = cf.browse(a.sort, flavor, limit, (page - 1) * limit)
+            _print_mods(r["mods"], m, rank_from=(page - 1) * limit + 1)
+            if r["limited"]:
+                print("\nYour API key can't browse the full catalogue, so this is CurseForge's short featured "
+                      "list for your game version.")
+            elif r["more"]:
+                print(f"\nMore: wowam browse --sort {a.sort} --page {page + 1}")
+            if r["mods"]:
+                print("Install one with: wowam install <ID>")
             return 0
 
         log = (lambda *_: None) if getattr(a, "quiet", False) else print
