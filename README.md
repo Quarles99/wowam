@@ -17,6 +17,11 @@ It has a CLI and a GUI and works on Windows, Linux (including Wine/Proton/Lutris
    python wowam.py config --addons-dir "C:/Program Files (x86)/World of Warcraft/_retail_/Interface/AddOns"
    python wowam.py scan            # adopt the addons you already have
    ```
+   `detect` checks the usual install locations (drives C–G on Windows, Wine/Proton/Lutris prefixes on Linux).
+   If your game lives somewhere else, use the `--addons-dir` form above.
+
+**Windows:** `wowam.bat` is a launcher that finds Python for you. Double-click it to open the GUI,
+or run it from a terminal in place of `python wowam.py` (for example `wowam.bat check`).
 
 ## WoW Forever
 
@@ -34,8 +39,13 @@ To manage your retail install as well, add `--addons-dir ".../_retail_/Interface
 | `wowam install weakauras-2 --channel beta` | Follow beta (or alpha) builds for this addon only |
 | `wowam check` | List the addons that have updates |
 | `wowam update` | Update everything (or `wowam update details`) |
-| `wowam list` / `remove` / `pin` / `unpin` | Self-explanatory |
+| `wowam install --github DeadlyBossMods/DeadlyBossMods` | Install from the latest GitHub release zip (also accepts a github.com URL; `--asset REGEX` picks one if a release has several zips). Updates are tracked by release tag |
+| `wowam install-file Auctionator-341.zip` | Install a zip you downloaded yourself. See [Addons that block third-party downloads](#addons-that-block-third-party-downloads) |
+| `wowam list` / `remove` / `pin` / `unpin` | Self-explanatory (`list` shows each addon's source: curseforge, github or manual) |
 | `wowam gui` | Open the graphical manager |
+
+Some API keys can't use `search`, and CurseForge then answers 403. If that happens, install by numeric project ID
+(shown as "Project ID" on the addon's CurseForge page), for example `wowam install 18808`.
 
 ## Automatic updates
 
@@ -54,7 +64,25 @@ Choose one:
 - Folders that an old version had but the new one doesn't are cleaned up.
 - Zips with path-traversal entries are refused.
 - `scan` reads the `X-Curse-Project-ID` tag that CurseForge's packager writes into `.toc` files. Addons without that tag (WoWInterface/GitHub-only, or your own) are left alone. Because the exact version of a scanned addon isn't known, the first `update` after a scan reinstalls the latest file once.
-- Some authors turn off third-party distribution. CurseForge then gives no download link for that addon, and wowam tells you so instead of working around it. Use the CurseForge app for those addons.
+## Addons that block third-party downloads
+
+Some authors (Details!, Deadly Boss Mods, Auctionator, Leatrix Plus and others) turn off third-party distribution.
+CurseForge then gives programs like wowam no download link, and wowam respects that rather than working around it.
+You can still manage them:
+
+1. `wowam install <addon>`, or "Install…" in the GUI, tells you the addon needs a manual download and gives its CurseForge page
+   (the GUI opens it for you). `wowam search` marks such addons as `manual`.
+2. Download the zip from that page yourself, then run `wowam install-file path/to/addon.zip`
+   (GUI: "Install from file…"). wowam works out which addon it is from the zip's `.toc`.
+   If the zip doesn't say, pass the project with `--mod <id|slug|url>`. The numeric ID is the one that always works.
+3. After that wowam checks the addon for updates like any other. `wowam check` and `wowam update` show
+   `Name: old → new (manual download: <page>)` when a newer file exists. Download it and run `install-file` again.
+   The previous version is kept in `Interface/wowam-backup/`.
+
+If the author also publishes release zips on GitHub (Deadly Boss Mods does), `wowam install --github owner/repo` gets
+fully automatic updates instead. Set the `GITHUB_TOKEN` environment variable if you check many repos and hit GitHub's rate limit.
+
+## Notes
 
 The config file (containing your API key) is at `~/.config/wowam/config.json` on Linux and `%APPDATA%\wowam\config.json` on Windows.
 You can also set the key with the `WOWAM_API_KEY` environment variable.

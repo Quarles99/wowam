@@ -16,6 +16,7 @@ Quick start:
 from __future__ import annotations
 
 import argparse
+import errno
 import glob
 import io
 import json
@@ -85,6 +86,18 @@ def _github_latest(repo: str) -> dict:
         raise WowamError(f"GitHub API error {e.code} for {repo}")
     except urllib.error.URLError as e:
         raise WowamError(f"Network error talking to GitHub: {e.reason}")
+
+
+def _move_dir(src: Path, dst: Path) -> None:
+    """Move a folder with an atomic rename, so it either fully moves or doesn't move at all.
+    (shutil.move falls back to copy-then-delete when a rename is refused, e.g. because WoW has a file
+    open on Windows, and that can leave the source half-deleted.) Only a cross-device move may copy."""
+    try:
+        os.rename(src, dst)
+    except OSError as e:
+        if e.errno != errno.EXDEV:
+            raise
+        shutil.move(str(src), str(dst))
 
 
 def _version_in(version: str, text: str) -> bool:
@@ -454,23 +467,25 @@ class Manager:
         backup = self.backup_root / re.sub(r"[^\w.-]", "_", mod_id)  # 'gh:owner/repo' isn't a legal dir name
         shutil.rmtree(backup, ignore_errors=True)
         backup.mkdir(parents=True, exist_ok=True)
-        moved = []
+        moved, placed = [], []
         try:
             for f in sorted(set(old_folders) | set(new_folders)):
                 live = self.addons / f
                 if live.exists():
-                    shutil.move(str(live), str(backup / f))
+                    _move_dir(live, backup / f)
                     moved.append(f)
             for f in new_folders:
-                shutil.move(str(staging / f), str(self.addons / f))
+                _move_dir(staging / f, self.addons / f)
+                placed.append(f)
         except Exception as e:
-            for f in new_folders:  # roll back
-                if (self.addons / f).exists() and (backup / f).exists():
-                    shutil.rmtree(self.addons / f, ignore_errors=True)
+            for f in placed:  # our fresh copies
+                shutil.rmtree(self.addons / f, ignore_errors=True)
             for f in moved:
                 if (backup / f).exists() and not (self.addons / f).exists():
-                    shutil.move(str(backup / f), str(self.addons / f))
-            raise WowamError(f"Failed to install files ({e}); previous version restored.")
+                    _move_dir(backup / f, self.addons / f)
+            hint = " Close WoW (or whatever has the addon's files open) and try again." \
+                if isinstance(e, PermissionError) else ""
+            raise WowamError(f"Failed to install files ({e}); previous version restored.{hint}")
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 

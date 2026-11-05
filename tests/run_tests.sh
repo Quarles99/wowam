@@ -109,6 +109,9 @@ PY
 $W install-file "$M/gh-as-cf.zip" >/dev/null
 ok "replaced github entry is dropped (no double tracking)" '! $W list | grep -q github && $W list | grep -q LibDep'
 
+echo "--- failed swap rolls back"
+ok "locked/failed folder swap restores previous version" 'python3 test_rollback.py | grep -q "^ok"'
+
 echo "--- remove"; $W remove libdep
 ok "remove deletes folders"             '[ ! -d "$A/LibDep" ]'
 echo "--- bad key"; WOWAM_API_KEY=nope $W check 2>&1 | tee /tmp/bk.txt
