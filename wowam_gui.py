@@ -60,7 +60,10 @@ class App:
         root.geometry("980x620")
         root.minsize(760, 420)
 
-        bar = ttk.Frame(root, padding=(8, 8, 8, 4))
+        self.update_info: dict | None = None
+        self.next_app_check = 0.0
+        self.banner = ttk.Frame(root, style="Banner.TFrame", padding=(10, 6))  # shown only when wowam has an update
+        self.bar = bar = ttk.Frame(root, padding=(8, 8, 8, 4))
         bar.pack(fill="x")
         self.buttons = []
         for text, cmd in [("Check for updates", self.check), ("Update all", self.update_all),
@@ -166,6 +169,8 @@ class App:
         s.configure("TScrollbar", background=p["btn"], arrowcolor=p["fg"], lightcolor=p["btn"],
                     darkcolor=p["btn"], troughcolor=p["field"])
         s.map("TScrollbar", background=[("active", p["btn_active"])])
+        s.configure("Banner.TFrame", background=p["sel"])
+        s.configure("Banner.TLabel", background=p["sel"], foreground=p["sel_fg"])
         s.configure("TPanedwindow", background=p["bg"])
         s.configure("Sash", background=p["border"])
         # classic tk widgets and the combobox drop-down list ignore ttk styles
@@ -251,7 +256,95 @@ class App:
             self.status.set(str(e))
             return False
 
+    # ------------------------------------------------------------ wowam's own updates
+    def check_app_update(self, force=False):
+        """The quiet daily check (or Settings' "Check now" when force): shows the banner if a newer wowam exists."""
+        def bg():
+            info = err = None
+            try:
+                info = wowam.newer_release() if force else wowam.check_self_update(self.cfg)
+            except wowam.WowamError as e:
+                err = str(e)
+            self.ui(lambda: self._app_update_checked(info, err, force))
+        threading.Thread(target=bg, daemon=True).start()
+
+    def _app_update_checked(self, info, err, force):
+        if err or not info:
+            if force:
+                if err:
+                    messagebox.showerror("wowam", err)
+                else:
+                    messagebox.showinfo("wowam", f"wowam {wowam.__version__} is the latest version.")
+            return
+        self.update_info = info
+        self.show_banner(info)
+
+    def show_banner(self, info):
+        for w in self.banner.winfo_children():
+            w.destroy()
+        ttk.Label(self.banner, style="Banner.TLabel",
+                  text=f"wowam {info['version']} is available (you have {wowam.__version__}).").pack(side="left")
+        ttk.Button(self.banner, text="✕", width=3, command=self.hide_banner).pack(side="right")
+        ttk.Button(self.banner, text="Skip this version", command=self.skip_app_update).pack(side="right", padx=4)
+        if wowam.FROZEN and info.get("exe_url") and info.get("sha_url"):
+            ttk.Button(self.banner, text="Release notes", command=lambda: webbrowser.open(info["page"])).pack(
+                side="right", padx=4)
+            ttk.Button(self.banner, text="Update now", command=self.do_app_update).pack(side="right", padx=4)
+        else:  # running from source: replacing our own files isn't something we do
+            ttk.Button(self.banner, text="Open download page", command=lambda: webbrowser.open(info["page"])).pack(
+                side="right", padx=4)
+        self.banner.pack(fill="x", before=self.bar)
+
+    def hide_banner(self):
+        self.banner.pack_forget()
+
+    def skip_app_update(self):
+        if self.update_info:
+            self.cfg["skipped_version"] = self.update_info["version"]
+            wowam.update_config_file(skipped_version=self.cfg["skipped_version"])
+        self.hide_banner()
+
+    def _lock(self, on: bool):
+        self.busy = on
+        for b in self.buttons:
+            b.state(["disabled" if on else "!disabled"])
+
+    def do_app_update(self):
+        info = self.update_info
+        if not info:
+            return
+        if self.busy:
+            return messagebox.showinfo("wowam", "Please wait for the current task to finish first.")
+        if not messagebox.askyesno("Update wowam", f"Download wowam {info['version']} and restart now?\n\n"
+                                   "Your settings and installed addons are not affected."):
+            return
+        self._lock(True)
+        self.status.set("Updating wowam…")
+
+        def bg():
+            err = None
+            try:
+                wowam.apply_self_update(info, log=self.log)
+            except wowam.WowamError as e:
+                err = str(e)
+            except Exception as e:  # keep the GUI alive on unexpected errors
+                err = f"Unexpected error: {e!r}"
+            self.ui(lambda: self._app_update_done(err))
+        threading.Thread(target=bg, daemon=True).start()
+
+    def _app_update_done(self, err):
+        self._lock(False)
+        if err:
+            self.log(f"! {err}")
+            self.status.set(err)
+            return messagebox.showerror("Update failed", f"{err}\n\nThe version you have was kept.")
+        wowam.relaunch()
+        self.root.destroy()
+
     def _tick(self):
+        if time.time() >= self.next_app_check and not self.update_info:
+            self.next_app_check = time.time() + 3600  # the 24h throttle lives in wowam.check_self_update
+            self.check_app_update()
         if str(self.cfg.get("theme") or "auto").lower() == "auto":
             self.apply_theme()  # follows the OS if it flips between light and dark while we're open
         mins = int(self.cfg.get("auto_check_minutes") or 0)
@@ -446,6 +539,7 @@ class App:
             "auto_check_minutes": tk.StringVar(value=str(self.cfg.get("auto_check_minutes", 60))),
             "auto_update": tk.BooleanVar(value=bool(self.cfg.get("auto_update"))),
             "install_dependencies": tk.BooleanVar(value=bool(self.cfg.get("install_dependencies", True))),
+            "check_for_updates": tk.BooleanVar(value=bool(self.cfg.get("check_for_updates", True))),
         }
         r = 0
 
@@ -485,6 +579,8 @@ class App:
         row("Auto-check every (min, 0 = off)", ttk.Entry(f, textvariable=v["auto_check_minutes"], width=8))
         row("", ttk.Checkbutton(f, text="Install updates automatically (not just notify)", variable=v["auto_update"]))
         row("", ttk.Checkbutton(f, text="Install required dependencies", variable=v["install_dependencies"]))
+        row("", ttk.Checkbutton(f, text="Check for new versions of wowam (once a day)", variable=v["check_for_updates"]),
+            ttk.Button(f, text="Check now", command=lambda: self.check_app_update(force=True)))
 
         bg_frame = ttk.LabelFrame(f, text="Background updates (when this window is closed)", padding=8)
         bg_frame.grid(row=r, column=0, columnspan=3, sticky="ew", pady=(10, 4)); r += 1

@@ -17,6 +17,12 @@ If you don't have Python, it offers to install it for you.
 2. Pick your World of Warcraft install (Retail, WoW Forever, Classic…). It finds them for you.
 3. Choose whether to include the addons you already have, and whether to add a desktop shortcut.
 
+**Updating wowam itself:** once a day wowam checks this repo's Releases for a newer version. With `wowam.exe` a banner
+appears with **Update now**: it downloads the new `wowam.exe`, checks it against the Release's SHA-256 checksum, swaps it in
+and restarts. Nothing changes if anything looks wrong. If you run from source, the banner just links to the download page.
+Choose **Skip this version** to dismiss one release, or untick the option in Settings to stop checking.
+(Self-update starts with the first release that includes it; older `wowam.exe` files need one manual download.)
+
 After that, use **Install…** to find addons, **Check for updates** / **Update all**, and **Install from file…** for the few
 addons whose authors don't allow outside downloads (see below).
 
@@ -61,6 +67,7 @@ To manage your retail install as well, add `--addons-dir ".../_retail_/Interface
 | `wowam list` / `remove` / `pin` / `unpin` | Self-explanatory (`list` shows each addon's source: curseforge, github or manual) |
 | `wowam gui` | Open the graphical manager |
 | `wowam shortcut` | Put a desktop shortcut that opens the graphical manager |
+| `wowam self-update` | Check for a newer wowam (`--check` only reports; with the packaged exe it installs it after asking, or with `--yes`) |
 | `wowam config --theme dark` | GUI colors: `auto` (follows your system's dark/light setting, the default), `light` or `dark`. Also in the GUI's Settings |
 
 Some API keys can't use `search`, and CurseForge then answers 403. If that happens, install by numeric project ID

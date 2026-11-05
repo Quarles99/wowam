@@ -36,13 +36,22 @@ MODS = {100: ("Details! Damage Meter", "details"), 200: ("LibDep", "libdep"),
 LIVE = {100: [1001], 200: [2001], 300: [3001], 400: [4001], 500: [5001], 600: [6001, 6002]}  # visible files per mod
 
 
-GH = {"acme/ghaddon": "v1.0", "acme/multizip": "v1.0", "acme/nozip": "v1.0"}  # repo -> latest tag
+GH = {"acme/ghaddon": "v1.0", "acme/multizip": "v1.0", "acme/nozip": "v1.0",
+      # wowam's own releases, for the self-update tests
+      "acme/selfupd": "v9.9.9", "acme/selfold": "v0.0.1", "acme/badsum": "v9.9.9", "acme/nosum": "v9.9.9"}  # repo -> latest tag
+SELF_REPOS = ("acme/selfupd", "acme/selfold", "acme/badsum", "acme/nosum")
+
+
+def self_exe(repo):
+    return b"MZ" + f"new-wowam-exe-{GH[repo]}".encode()
 
 
 def gh_release(repo):
     tag = GH[repo]
     names = {"acme/ghaddon": [f"GhAddon-{tag}.zip", "release.json"], "acme/multizip": ["A-nolib.zip", "A.zip"],
-             "acme/nozip": []}[repo]
+             "acme/nozip": [], "acme/selfupd": ["wowam.exe", "wowam.exe.sha256"],
+             "acme/selfold": ["wowam.exe", "wowam.exe.sha256"], "acme/badsum": ["wowam.exe", "wowam.exe.sha256"],
+             "acme/nosum": ["wowam.exe"]}[repo]
     return {"tag_name": tag, "published_at": "2026-11-03T00:00:00Z",
             "assets": [{"name": n, "browser_download_url": f"{BASE}/gh/{repo.split('/')[1]}/{tag}/{n}"} for n in names]}
 
@@ -83,6 +92,14 @@ class H(BaseHTTPRequestHandler):
         p, _, qs = self.path.partition("?")
         m = re.fullmatch(r"/repos/(acme/\w+)/releases/latest", p)
         if m: return self.send(gh_release(m[1]))
+        m = re.fullmatch(r"/gh/(\w+)/([^/]+)/(wowam\.exe(?:\.sha256)?)", p)
+        if m:
+            repo = "acme/" + m[1]
+            if m[3] == "wowam.exe":
+                return self.send(None, raw=self_exe(repo), ctype="application/octet-stream")
+            import hashlib
+            digest = hashlib.sha256(b"something else" if repo == "acme/badsum" else self_exe(repo)).hexdigest()
+            return self.send(None, raw=(digest + "  wowam.exe\n").encode(), ctype="text/plain")
         m = re.fullmatch(r"/gh/(\w+)/([^/]+)/(.+\.zip)", p)
         if m: return self.send(None, raw=zip_of([("GhAddon", m[2])]), ctype="application/zip")
         q = dict(kv.split("=", 1) for kv in qs.split("&") if "=" in kv)

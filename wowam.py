@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import errno
 import glob
+import hashlib
 import io
 import json
 import os
@@ -130,6 +131,7 @@ DEFAULT_CONFIG = {
     "auto_check_minutes": 60,
     "auto_update": False,
     "theme": "auto",  # GUI colors: auto (follow the OS), light or dark
+    "check_for_updates": True,  # once a day, look for a newer wowam on GitHub (the GUI offers a one-click update)
 }
 THEMES = ("auto", "light", "dark")
 
@@ -827,6 +829,141 @@ def create_shortcut(dest_dir: Path | None = None) -> Path:
     raise WowamError("Creating shortcuts isn't supported on this OS.")
 
 
+# --------------------------------------------------------------------------- self-update (from GitHub Releases)
+
+UPDATE_REPO = os.environ.get("WOWAM_UPDATE_REPO", "Quarles99/wowam")
+UPDATE_ASSET = "wowam.exe"          # the Release asset, plus UPDATE_ASSET + ".sha256" next to it
+UPDATE_INTERVAL = 24 * 3600
+
+
+def _version_tuple(v: str) -> tuple:
+    nums = re.findall(r"\d+", str(v).lstrip("vV").split("-")[0])
+    return tuple(int(n) for n in nums[:4]) or (0,)
+
+
+def newer_release() -> dict | None:
+    """The latest GitHub Release of wowam itself if it's newer than the running version, else None.
+    Raises WowamError on network/API problems."""
+    rel = _github_latest(UPDATE_REPO)
+    tag = rel.get("tag_name") or ""
+    if _version_tuple(tag) <= _version_tuple(__version__):
+        return None
+    assets = {a.get("name"): a.get("browser_download_url") for a in rel.get("assets", [])}
+    return {"version": tag.lstrip("vV"), "tag": tag, "notes": rel.get("body") or "",
+            "page": rel.get("html_url") or f"https://github.com/{UPDATE_REPO}/releases/tag/{tag}",
+            "exe_url": assets.get(UPDATE_ASSET), "sha_url": assets.get(UPDATE_ASSET + ".sha256")}
+
+
+def update_config_file(**values) -> None:
+    """Change just these keys in config.json. (save_config(cfg) would also persist overrides such as an
+    API key that came from the environment.)"""
+    raw = {}
+    if CONFIG_PATH.exists():
+        try:
+            raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return
+    raw.update(values)
+    try:
+        save_config(raw)
+    except OSError:
+        pass
+
+
+def check_self_update(cfg: dict, force: bool = False) -> dict | None:
+    """The quiet once-a-day check. Never raises: a failed check must never get in the way."""
+    if not force:
+        if not cfg.get("check_for_updates", True):
+            return None
+        if time.time() - float(cfg.get("last_update_check") or 0) < UPDATE_INTERVAL:
+            return None
+    try:
+        info = newer_release()
+    except WowamError:
+        info = None
+    cfg["last_update_check"] = int(time.time())
+    update_config_file(last_update_check=cfg["last_update_check"])
+    if info and not force and info["version"] == cfg.get("skipped_version"):
+        return None
+    return info
+
+
+def _http_get(url: str, limit: int) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = r.read(limit + 1)
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise WowamError(f"Download failed: {e}")
+    if len(data) > limit:
+        raise WowamError("Download is larger than expected; refusing it.")
+    return data
+
+
+def apply_self_update(info: dict, log=print) -> Path:
+    """Replace the running wowam.exe with the release's, after checking its SHA-256. Only for the packaged
+    exe. A running exe can be renamed but not overwritten, so the old one becomes wowam.exe.old (removed on
+    the next start) and the new one takes its name. Any failure leaves the current exe untouched."""
+    if not FROZEN:
+        raise WowamError(f"Self-update only replaces the packaged wowam.exe. You're running from source: "
+                         f"download the new version from {info['page']}.")
+    if not info.get("exe_url") or not info.get("sha_url"):
+        raise WowamError(f"That release has no {UPDATE_ASSET} with a checksum. Get it from {info['page']}.")
+    exe = Path(sys.executable)
+    new, old = exe.with_name(exe.name + ".new"), exe.with_name(exe.name + ".old")
+    try:
+        log(f"Downloading wowam {info['version']}…")
+        want = re.match(r"\s*([0-9a-fA-F]{64})", _http_get(info["sha_url"], 4096).decode("ascii", "replace"))
+        if not want:
+            raise WowamError("The release's checksum file couldn't be read; nothing was changed.")
+        blob = _http_get(info["exe_url"], 200 << 20)
+        if hashlib.sha256(blob).hexdigest() != want.group(1).lower():
+            raise WowamError("The download didn't match its checksum; nothing was changed.")
+        if os.name == "nt" and blob[:2] != b"MZ":
+            raise WowamError("The download isn't a Windows program; nothing was changed.")
+        new.write_bytes(blob)
+        os.chmod(new, exe.stat().st_mode)
+        try:
+            old.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            raise WowamError(f"Couldn't clear the previous update's leftover file ({e}); try again after restarting.")
+        try:
+            os.replace(exe, old)
+        except OSError as e:
+            raise WowamError(f"Couldn't move the current wowam.exe aside ({e}); nothing was changed.")
+        try:
+            os.replace(new, exe)
+        except OSError as e:
+            os.replace(old, exe)  # put the working one back
+            raise WowamError(f"Couldn't put the new wowam.exe in place ({e}); the current one was kept.")
+    finally:
+        try:
+            new.unlink()
+        except OSError:
+            pass
+    return exe
+
+
+def cleanup_after_update() -> None:
+    """Delete the previous exe left behind by a self-update (it's unlocked once that process has exited)."""
+    if FROZEN:
+        try:
+            exe = Path(sys.executable)
+            exe.with_name(exe.name + ".old").unlink()
+        except OSError:
+            pass
+
+
+def relaunch(args=("gui",)) -> None:
+    """Start a fresh copy of ourselves (after a self-update). The PyInstaller variable stops the child from
+    reusing this process's unpacked files."""
+    env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+    flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
+    subprocess.Popen(_self_cmd() + list(args), env=env, creationflags=flags, close_fds=True)
+
+
 def schedule(every_minutes: int) -> str:
     cmd = _self_cmd() + ["update", "--quiet"]
     if os.name == "nt":
@@ -878,6 +1015,7 @@ def _fmt_table(rows: list[list[str]], headers: list[str]) -> str:
 
 
 def main(argv=None) -> int:
+    cleanup_after_update()
     for stream in (sys.stdout, sys.stderr):  # piped Windows output is cp1252; don't die on arrows/accents
         if stream is not None and hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
@@ -918,6 +1056,9 @@ def main(argv=None) -> int:
     sub.add_parser("unschedule", help="remove the auto-update job")
     sub.add_parser("gui", help="open the graphical manager")
     sub.add_parser("shortcut", help="put a desktop shortcut that opens the graphical manager")
+    su = sub.add_parser("self-update", help="check GitHub for a newer wowam and (packaged exe only) install it")
+    su.add_argument("--check", action="store_true", help="only report, don't install")
+    su.add_argument("--yes", action="store_true", help="don't ask for confirmation")
 
     if FROZEN and not (argv if argv is not None else sys.argv[1:]):
         argv = ["gui"]  # double-clicking the packaged .exe opens the GUI
@@ -970,6 +1111,20 @@ def main(argv=None) -> int:
             return run_gui()
         if a.cmd == "shortcut":
             print(f"Created {create_shortcut()}"); return 0
+        if a.cmd == "self-update":
+            info = newer_release()
+            if not info:
+                print(f"wowam {__version__} is the latest version."); return 0
+            print(f"wowam {info['version']} is available (you have {__version__}): {info['page']}")
+            if a.check:
+                return 0
+            if not FROZEN:
+                print("You're running from source, so download the new version from the page above."); return 0
+            if not a.yes and input("Download and install it now? [y/N] ").strip().lower() not in ("y", "yes"):
+                return 0
+            apply_self_update(info)
+            print("Updated. Start wowam again to use the new version.")
+            return 0
         if a.cmd == "flavors":
             for vt in CurseForge(cfg.get("api_key", "")).version_types():
                 print(f"{vt['id']:>7}  {vt.get('name', '')}  ({vt.get('slug', '')})")

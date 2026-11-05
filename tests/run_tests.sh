@@ -123,6 +123,16 @@ ok "config --theme persists" '$W config | grep -q "\"theme\": \"dark\""'
 ok "invalid theme rejected" '! $W config --theme neon 2>/dev/null'
 ok "OS dark-mode probe returns a bool" 'python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import wowam; print(wowam.system_prefers_dark())" "$ROOT" | grep -qE "^(True|False)$"'
 
+echo "--- self-update"
+python3 test_selfupdate.py | tee /tmp/su.txt
+ok "self-update logic (version compare, throttle, checksum, swap)" 'grep -q "^ok" /tmp/su.txt'
+WOWAM_UPDATE_REPO=acme/selfupd $W self-update --check | tee /tmp/su2.txt
+ok "self-update --check reports the newer release" 'grep -q "9.9.9 is available" /tmp/su2.txt'
+WOWAM_UPDATE_REPO=acme/selfold $W self-update --check | tee /tmp/su3.txt
+ok "self-update --check says up to date" 'grep -q "latest version" /tmp/su3.txt'
+WOWAM_UPDATE_REPO=acme/selfupd $W self-update | tee /tmp/su4.txt
+ok "source install is pointed at the download page" 'grep -q "running from source" /tmp/su4.txt'
+
 echo "--- remove"; $W remove libdep
 ok "remove deletes folders"             '[ ! -d "$A/LibDep" ]'
 echo "--- bad key"; WOWAM_API_KEY=nope $W check 2>&1 | tee /tmp/bk.txt
