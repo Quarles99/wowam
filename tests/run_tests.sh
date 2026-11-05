@@ -76,6 +76,13 @@ mkzip "$M/untagged.zip" 1.0 ""; $W install-file "$M/untagged.zip" 2>&1 | tee /tm
 ok "untagged zip asks for --mod" 'grep -q -- "--mod" /tmp/ut.txt'
 $W install-file "$M/untagged.zip" --mod nodist >/dev/null
 ok "--mod override works" 'grep -q "1.0" "$A/NoDist/NoDist.toc"'
+python3 - "$M/site-only.zip" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("NoDist/NoDist.toc", "## Title: NoDist\n## Version: 2.1\n## X-Website: https://www.curseforge.com/wow/addons/nodist\n")
+PY
+$W install-file "$M/site-only.zip" >/dev/null
+ok "no project id: falls back to X-Website slug" 'grep -q "2.1" "$A/NoDist/NoDist.toc"'
 echo "--- github source"
 $W install --github acme/ghaddon
 ok "github install" 'grep -q "v1.0" "$A/GhAddon/GhAddon.toc"'

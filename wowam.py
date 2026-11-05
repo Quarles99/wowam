@@ -383,7 +383,13 @@ class Manager:
             ref = m.group(1)
         if ref.isdigit():
             return self.cf.mod(int(ref))
-        hits = self.cf.search(slug=ref, page_size=5)
+        try:
+            hits = self.cf.search(slug=ref, page_size=5)
+        except WowamError as e:
+            if "403" in str(e):  # some API keys can read mods but not search
+                raise WowamError(f"Can't look up '{ref}' by name: this API key isn't allowed to search CurseForge. "
+                                 f"Use the numeric project ID instead (shown as 'Project ID' on the addon's page).")
+            raise
         hits = [h for h in hits if h.get("slug") == ref]
         if hits:
             return hits[0]
@@ -525,6 +531,12 @@ class Manager:
                 pid = read_toc(staging / f).get("X-Curse-Project-ID", "").strip()
                 if pid.isdigit():
                     tagged.setdefault(pid, []).append(f)
+            if not mod_ref and not tagged:  # some zips only carry the CurseForge page URL
+                for f in folders:
+                    site = read_toc(staging / f).get("X-Website", "")
+                    if re.search(r"curseforge\.com/wow/addons/[^/?#\s]+", site):
+                        mod_ref = site
+                        break
             if mod_ref:
                 mod = self.resolve_mod(mod_ref)
             elif tagged:
