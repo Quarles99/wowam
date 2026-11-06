@@ -118,6 +118,18 @@ SC=$(mktemp -d)
 python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import wowam; print(wowam.create_shortcut(wowam.Path(sys.argv[2])))" "$ROOT" "$SC"
 ok "shortcut file created" '[ -n "$(ls "$SC" | grep -iE "wowam|wow addon manager")" ]'
 
+echo "--- api key checks"
+python3 test_keys.py | tee /tmp/ky.txt
+ok "key cleaning and diagnosis (shapes, quotes, truncation)" 'grep -q "^ok" /tmp/ky.txt'
+$W config --api-key 'cfc_pat_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' 2>&1 | tee /tmp/ky2.txt
+ok "saving a personal access token warns what it is" 'grep -q "personal access token" /tmp/ky2.txt'
+printf '%s\n' '$2a$10$AbCdEfGhIjAbCdEfGhIjAbCdEfGhIjAbCdEfGhIjAbCdEfGhIjKlM' | $W config --api-key-prompt 2>&1 | tee /tmp/ky3.txt
+ok "--api-key-prompt keeps a key full of dollar signs intact" 'grep -q "(60 chars)" /tmp/ky3.txt && ! grep -q Warning /tmp/ky3.txt'
+$W config --api-key '$2a$10$short' 2>&1 | tee /tmp/ky4.txt
+ok "a truncated key is flagged with the quoting advice" 'grep -q "single quotes" /tmp/ky4.txt'
+WOWAM_API_KEY=nope $W check 2>&1 | tee /tmp/ky5.txt
+ok "a rejected key's error says why" 'grep -q "403" /tmp/ky5.txt && grep -q "doesn.t look like the usual" /tmp/ky5.txt'
+
 echo "--- theme"
 $W config --theme dark >/dev/null
 ok "config --theme persists" '$W config | grep -q "\"theme\": \"dark\""'

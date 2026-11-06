@@ -694,7 +694,7 @@ class App:
                         val = max(0, int(val))
                     except ValueError:
                         val = 60
-                self.cfg[k] = val.strip() if isinstance(val, str) else val
+                self.cfg[k] = (wowam.clean_api_key(val) if k == "api_key" else val.strip()) if isinstance(val, str) else val
             wowam.save_config(self.cfg)
             win.destroy()
             self.apply_theme()
@@ -860,7 +860,7 @@ class SetupWizard:
             self.finish()
 
     def check_key(self):
-        key = self.key.get().strip()
+        key = wowam.clean_api_key(self.key.get())
         if not key:
             self.msg.set("Paste your CurseForge key first.")
             return
@@ -885,8 +885,9 @@ class SetupWizard:
             return
         self.next_btn.state(["!disabled"])
         if "403" in err:
-            self.msg.set("CurseForge didn't accept that key. Make sure you copied the whole key (not your "
-                         "password), and that it has been approved.")
+            self.msg.set("CurseForge didn't accept that key. " + (
+                wowam.key_problem(key) or "It looks like a normal key, so check that you copied all of it (not "
+                "your password), and that CurseForge has approved it: a brand-new key can take a while."))
         else:
             self.msg.set(f"Couldn't check the key: {err}")
 

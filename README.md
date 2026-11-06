@@ -114,6 +114,24 @@ fully automatic updates instead. Set the `GITHUB_TOKEN` environment variable if 
 The config file (containing your API key) is at `~/.config/wowam/config.json` on Linux and `%APPDATA%\wowam\config.json` on Windows.
 You can also set the key with the `WOWAM_API_KEY` environment variable.
 
+## My CurseForge key isn't accepted
+
+wowam checks the *shape* of the key and tells you what looks wrong. The usual causes, most likely first:
+
+1. **Wrong kind of token.** wowam needs a **Core API key**, from [console.curseforge.com](https://console.curseforge.com) under
+   *API keys*. It starts with `$2a$10$` and is 60 characters long. A personal access token (starts with `cfc_pat_`) or an upload
+   token (a long code with dashes, from the author tools) will be refused with a 403 even though they look similar.
+2. **The key got cut short or changed when typed after a command.** Keys contain `$`, which terminals treat specially:
+   in Git Bash or Linux an unquoted key silently becomes a couple of characters, and in PowerShell it disappears. Either put the key
+   in **single quotes** (`wowam config --api-key '$2a$10$...'`) or run `wowam config --api-key-prompt` and paste it at the prompt.
+   Pasting into the GUI's setup window has no such problem.
+3. **A brand-new key** can take a while to be approved by CurseForge. Try again later.
+4. **Extra characters from copying**: spaces, line breaks or quote marks around the key. wowam removes these itself, but a space
+   in the *middle* of the key means part of it is missing.
+
+If the key looks right and is still refused, copy it again from the console (use the copy button, not a screenshot), and check
+you're not on a network that blocks `api.curseforge.com`.
+
 ## Tests
 
 `bash tests/run_tests.sh && bash tests/forever_tests.sh` runs everything against a local mock of the CurseForge API. No API key or network is needed.

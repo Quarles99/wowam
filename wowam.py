@@ -199,6 +199,38 @@ def _atomic_write_json(path: Path, data) -> None:
 
 # --------------------------------------------------------------------------- AddOns detection
 
+_INVISIBLE = dict.fromkeys(map(ord, "​‌‍‎‏⁠﻿ "))  # zero-width/BOM/nbsp
+_KEY_HELP = ("Create one at console.curseforge.com, under API keys. It starts with $2a$10$ and is 60 characters long.")
+
+
+def clean_api_key(raw: str) -> str:
+    """Undo what copy/paste does to a key: invisible characters, surrounding spaces and a pair of quotes."""
+    key = (raw or "").translate(_INVISIBLE).strip()
+    if len(key) >= 2 and key[0] == key[-1] and key[0] in "'\"" or key[:1] + key[-1:] in ("‘’", "“”"):
+        key = key[1:-1].strip()
+    return key
+
+
+def key_problem(key: str) -> str | None:
+    """Plain-language guess at why a key can't work, judged only by its shape (never sent anywhere).
+    None when it looks like a normal Core API key, so the cause must be something else (e.g. not approved yet)."""
+    if not key:
+        return "No key was entered."
+    if key.startswith("cfc_pat_"):
+        return f"That's a personal access token (it starts with cfc_pat_), not a Core API key. {_KEY_HELP}"
+    if re.fullmatch(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", key):
+        return f"That looks like a project upload token (a UUID), not an API key. {_KEY_HELP}"
+    if re.search(r"\s", key):
+        return "The key contains a space or line break. Copy just the key itself."
+    if key.startswith("$2a$") and len(key) != 60:
+        return (f"That key is {len(key)} characters, but they're normally 60, so part of it is missing. If you typed "
+                f"it after a command, your terminal treats $ specially: put the key in single quotes, or run "
+                f"`wowam config --api-key-prompt` and paste it there.")
+    if not key.startswith("$2a$"):
+        return f"That doesn't look like the usual CurseForge API key. {_KEY_HELP}"
+    return None
+
+
 def detect_addons_dirs() -> list[Path]:
     """Look in the usual places for WoW AddOns folders (Windows, Wine/Proton prefixes, macOS)."""
     home = Path.home()
@@ -287,7 +319,9 @@ class CurseForge:
                     return json.loads(raw) if raw else {}
             except urllib.error.HTTPError as e:
                 if e.code == 403:
-                    raise WowamError("CurseForge rejected the API key (403). Check it with `wowam config --api-key`.")
+                    hint = key_problem(self.api_key) or "A brand-new key can take a while to be approved."
+                    raise WowamError(f"CurseForge rejected the API key (403). {hint} "
+                                     f"Check it with `wowam config --api-key-prompt`.")
                 if e.code == 404:
                     raise WowamError(f"Not found: {path}")
                 if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
@@ -1128,7 +1162,10 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     c = sub.add_parser("config", help="show or change settings")
-    c.add_argument("--api-key"); c.add_argument("--addons-dir", dest="set_dir")
+    c.add_argument("--api-key", help="your CurseForge key (keys contain $: use single quotes, or --api-key-prompt)")
+    c.add_argument("--api-key-prompt", action="store_true",
+                   help="paste the key at a hidden prompt (avoids shell quoting problems)")
+    c.add_argument("--addons-dir", dest="set_dir")
     c.add_argument("--flavor", dest="set_flavor"); c.add_argument("--channel", choices=CHANNELS)
     c.add_argument("--deps", choices=["on", "off"], help="auto-install required dependencies")
     c.add_argument("--theme", choices=THEMES, help="GUI colors (auto follows the OS)")
@@ -1178,6 +1215,15 @@ def main(argv=None) -> int:
 
     try:
         if a.cmd == "config":
+            if a.api_key_prompt:
+                import getpass
+                a.api_key = (getpass.getpass("Paste your CurseForge API key (hidden): ") if sys.stdin.isatty()
+                             else sys.stdin.readline())
+            if a.api_key is not None:
+                a.api_key = clean_api_key(a.api_key)
+                problem = key_problem(a.api_key) if a.api_key else None
+                if problem:  # still saved: the shape check is a guess, and a key may be valid in a format we don't know
+                    print(f"Warning: {problem}", file=sys.stderr)
             changed = False
             for key, val in (("api_key", a.api_key), ("addons_dir", a.set_dir),
                              ("flavor", a.set_flavor), ("channel", a.channel), ("theme", a.theme)):
