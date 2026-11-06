@@ -20,4 +20,12 @@ ok "retail-only addon refused w/ hint"   'grep -q "no release-or-better file" /t
 echo "--- search scoped"; $W search questie
 ok "retail install unaffected"           '$W --addons-dir "$WOW/_retail_/Interface/AddOns" install details >/dev/null && [ -d "$WOW/_retail_/Interface/AddOns/Details" ]'
 ok "explicit 'forever beta' resolves"    '$W --flavor "forever beta" check 2>&1 | grep -q 88889'
+echo "--- wrong-flavor zip"
+python3 - "$H/6001.zip" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("Questie/Questie.toc", "## Title: Questie" + chr(10) + "## Version: retail" + chr(10) + "## X-Curse-Project-ID: 600" + chr(10))
+PY
+$W install-file "$H/6001.zip" 2>&1 | tee /tmp/wf.txt
+ok "retail zip refused in a Forever folder, names the right file" 'grep -q "different game version" /tmp/wf.txt && grep -q "6002.zip" /tmp/wf.txt && grep -q "forever" "$A/Questie/Questie.toc"'
 kill $SRV; echo "$pass passed, $fail failed"

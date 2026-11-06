@@ -73,6 +73,8 @@ mkzip "$M/renamed.zip" 2.0 300; $W install-file "$M/renamed.zip"
 ok "unmatched zip name -> outdated detected via toc version" '$W check | grep -q "NoDist"'
 mkzip "$M/other-name.zip" 2.1 300; $W install-file "$M/other-name.zip"
 ok "unmatched zip name but current version -> no nag" '$W check | grep -q "up to date"'
+cp "$M/3002.zip" "$M/3002(1).zip"; mkzip "$M/3002(1).zip" 2.1 300; $W install-file "$M/3002(1).zip" >/dev/null
+ok "browser-renamed duplicate download still matches its file" '$W check | grep -q "up to date"'
 mkzip "$M/untagged.zip" 1.0 ""; $W install-file "$M/untagged.zip" 2>&1 | tee /tmp/ut.txt
 ok "untagged zip asks for --mod" 'grep -q -- "--mod" /tmp/ut.txt'
 $W install-file "$M/untagged.zip" --mod nodist >/dev/null

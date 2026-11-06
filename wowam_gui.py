@@ -58,7 +58,7 @@ class App:
         self.next_check = 0.0
 
         root.title(f"WoW Addon Manager {wowam.__version__}")
-        root.geometry("980x620")
+        root.geometry("1040x620")
         root.minsize(760, 420)
 
         self.update_info: dict | None = None
@@ -67,6 +67,9 @@ class App:
         self.bar = bar = ttk.Frame(root, padding=(8, 8, 8, 4))
         bar.pack(fill="x")
         self.buttons = []
+        # Packed first so a narrow window clips the other buttons, never this one.
+        self.settings_btn = ttk.Button(bar, text="Settings", command=self.open_settings)
+        self.settings_btn.pack(side="right")
         for text, cmd in [("Check for updates", self.check), ("Update all", self.update_all),
                           ("Update selected", self.update_selected), ("Browse / Install…", self.open_install),
                           ("Install from file…", self.install_from_file), ("Remove", self.remove), ("Pin / Unpin", self.toggle_pin),
@@ -74,7 +77,7 @@ class App:
             b = ttk.Button(bar, text=text, command=cmd)
             b.pack(side="left", padx=(0, 4))
             self.buttons.append(b)
-        ttk.Button(bar, text="Settings", command=self.open_settings).pack(side="right")
+        bar.bind("<Configure>", self._fit_settings_button)
 
         pane = ttk.PanedWindow(root, orient="vertical")
         pane.pack(fill="both", expand=True, padx=8)
@@ -258,6 +261,17 @@ class App:
             return False
 
     # ------------------------------------------------------------ wowam's own updates
+    def _fit_settings_button(self, _event=None):
+        """Show "Settings" in full; only when the toolbar can't fit, collapse it to a gear icon."""
+        btn = self.settings_btn
+        left = sum(b.winfo_reqwidth() + 4 for b in self.buttons)
+        full = btn.cget("text") == "Settings"
+        full_w = btn.winfo_reqwidth() if full else 86
+        avail = self.bar.winfo_width() - 16
+        want = "Settings" if left + full_w <= avail else "⚙"
+        if want != btn.cget("text"):
+            btn.configure(text=want, width=0 if want == "Settings" else 3)
+
     def check_app_update(self, force=False):
         """The quiet daily check (or Settings' "Check now" when force): shows the banner if a newer wowam exists."""
         def bg():

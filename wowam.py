@@ -566,6 +566,10 @@ class Manager:
         raise WowamError(f"'{ref}' is not an exact slug. Did you mean: "
                          + ", ".join(f"{h['slug']} ({h['name']})" for h in hits))
 
+    def _file_is_for_flavor(self, f: dict) -> bool:
+        sgv = f.get("sortableGameVersions")
+        return not sgv or any(v.get("gameVersionTypeId") == self.flavor for v in sgv)
+
     def latest_file_id(self, mod: dict, channel: int | None = None) -> int | None:
         channel = channel or self.channel
         cands = [i for i in mod.get("latestFilesIndexes", [])
@@ -711,10 +715,25 @@ class Manager:
                 raise WowamError(f"{p.name}: no X-Curse-Project-ID in its .toc files; "
                                  f"say which addon it is with --mod <slug|id|url>.")
             try:  # identify the exact CurseForge file by its file name, so updates can be detected
-                files = self.cf.mod_files(mod["id"], self.flavor)
+                files = self.cf.mod_files(mod["id"], None)  # every flavor: catch a zip for the wrong game
             except WowamError:
                 files = []
-            match = next((f for f in files if f.get("fileName", "").lower() == p.name.lower()), None)
+            # browsers rename repeat downloads "name(1).zip" / "name (1).zip"
+            norm = lambda n: re.sub(r"\s*\(\d+\)(?=\.zip$)", "", (n or "").lower())
+            match = next((f for f in files if norm(f.get("fileName")) == norm(p.name)), None)
+            if match and not self._file_is_for_flavor(match):
+                right = None
+                try:
+                    fid = self.latest_file_id(mod, self.channel)
+                    right = self.cf.files([fid])[0] if fid else None
+                except WowamError:
+                    pass
+                page = mod.get("links", {}).get("websiteUrl", "")
+                hint = (f" Download {right['fileName']} from the Files tab instead"
+                        f"{' (' + page + '/files/' + str(right['id']) + ')' if page else ''}."
+                        if right else " Look for the build made for this game on the addon's Files tab.")
+                raise WowamError(f"{p.name} is {mod['name']}'s {match.get('displayName') or 'other'} build, which "
+                                 f"is for a different game version than this AddOns folder; not installed.{hint}")
             toc_ver = read_toc(staging / tagged.get(str(mod["id"]), folders)[0]).get("Version", "")
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)
@@ -813,8 +832,10 @@ class Manager:
 
     def manual_notice(self, p: dict) -> str:
         url = p["entry"].get("url") or (p["mod"] or {}).get("links", {}).get("websiteUrl", "")
+        fid = p.get("latest_file_id")
+        where = f"{url}/files/{fid}" if (url and fid) else url
         return (f"{p['entry']['name']}: {p['entry'].get('version')}  →  {p['latest_version']} "
-                f"(manual download: {url}, then `wowam install-file <zip>`)")
+                f"(manual download: {where}, then `wowam install-file <zip>`)")
 
     def update(self, refs: list[str] | None = None) -> tuple[int, list[str]]:
         pending = self.check_updates()
