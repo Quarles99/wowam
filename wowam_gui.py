@@ -58,7 +58,7 @@ class App:
         self.next_check = 0.0
 
         root.title(f"WoW Addon Manager {wowam.__version__}")
-        root.geometry("1040x620")
+        root.geometry("1200x620")
         root.minsize(760, 420)
 
         self.update_info: dict | None = None
@@ -72,7 +72,7 @@ class App:
         self.settings_btn.pack(side="right")
         for text, cmd in [("Check for updates", self.check), ("Update all", self.update_all),
                           ("Update selected", self.update_selected), ("Browse / Install…", self.open_install),
-                          ("Install from file…", self.install_from_file), ("Remove", self.remove), ("Pin / Unpin", self.toggle_pin),
+                          ("Install from file…", self.install_from_file), ("Manual downloads…", self.open_manual), ("Remove", self.remove), ("Pin / Unpin", self.toggle_pin),
                           ("Scan folder", self.scan), ("Open page", self.open_page)]:
             b = ttk.Button(bar, text=text, command=cmd)
             b.pack(side="left", padx=(0, 4))
@@ -415,20 +415,29 @@ class App:
             for p in pending:
                 if p["blocked"]:
                     self.log("  ! " + self.mgr.manual_notice(p).replace("`wowam install-file <zip>`", "“Install from file…”"))
+            self.manual_refresh()
         self._schedule_next()
         self.run_bg("Checking for updates", work, done)
 
     def update_all(self, auto=False):
         self._schedule_next()
         self.run_bg("Updating" + (" (auto)" if auto else ""), lambda: self.mgr.update(),
-                    lambda _: self.pending.clear())
+                    lambda _: self._after_update(None, auto))
 
     def update_selected(self):
         ids = self.selected()
         if not ids:
             return messagebox.showinfo("Update", "Select one or more addons first.")
         self.run_bg("Updating selected", lambda: self.mgr.update(ids),
-                    lambda _: [self.pending.pop(i, None) for i in ids])
+                    lambda _: self._after_update(ids))
+
+    def _after_update(self, ids=None, auto=False):
+        """Automatic updates are done; hand-download ones are still pending, so keep them and show them."""
+        for i in list(self.pending):
+            if (ids is None or i in ids) and not self.pending[i].get("blocked"):
+                del self.pending[i]
+        if not auto and any(p.get("blocked") for p in self.pending.values()):
+            self.open_manual()
 
     def remove(self):
         ids = self.selected()
@@ -458,6 +467,92 @@ class App:
                                             filetypes=[("Addon zip", "*.zip"), ("All files", "*.*")])
         if paths:
             self.run_bg("Installing from file", lambda: [self.mgr.install_local(p) for p in paths])
+
+    def open_manual(self):
+        """Addons whose authors block third-party downloads: open each file's page, then install the zip here."""
+        if not self.mgr and not self._init_manager():
+            return self.setup()
+        if getattr(self, "manual_win", None) and self.manual_win.winfo_exists():
+            self.manual_win.lift()
+            return self.manual_refresh()
+        win = self.manual_win = tk.Toplevel(self.root)
+        self.style_window(win)
+        win.title("Manual downloads")
+        win.geometry("760x380")
+        win.minsize(560, 260)
+        f = ttk.Frame(win, padding=12)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, wraplength=720, justify="left",
+                  text="These authors don't allow other programs to download their addons. Open each page, download "
+                       "the zip, then choose “Install zip(s)…” and wowam installs and tracks it for you.").pack(anchor="w")
+        box = ttk.Frame(f)
+        box.pack(fill="both", expand=True, pady=8)
+        tree = self.manual_tree = ttk.Treeview(box, columns=("have", "new"), selectmode="extended", height=8)
+        for col, text, w in (("#0", "Addon", 240), ("have", "Installed", 200), ("new", "Download this file", 240)):
+            tree.heading(col, text=text)
+            tree.column(col, width=w, stretch=(col == "#0"))
+        sb = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.manual_msg = tk.StringVar()
+        ttk.Label(f, textvariable=self.manual_msg).pack(anchor="w")
+        row = ttk.Frame(f)
+        row.pack(fill="x", pady=(8, 0))
+        ttk.Button(row, text="Open download page", command=self.manual_open_pages).pack(side="left")
+        ttk.Button(row, text="Open all", command=lambda: self.manual_open_pages(all_rows=True)).pack(side="left", padx=4)
+        ttk.Button(row, text="Install zip(s)…", command=self.manual_install).pack(side="left", padx=(16, 0))
+        ttk.Button(row, text="Close", command=win.destroy).pack(side="right")
+        tree.bind("<Double-1>", lambda e: self.manual_open_pages())
+        self.manual_refresh()
+        if not self.pending and not self.busy:  # nothing checked yet this session
+            self.check()
+
+    def _manual_items(self):
+        return {i: p for i, p in self.pending.items() if p.get("blocked")}
+
+    def manual_refresh(self):
+        if not hasattr(self, "manual_tree"):
+            return
+        win = getattr(self, "manual_win", None)
+        if not win or not win.winfo_exists():
+            return
+        tree = self.manual_tree
+        tree.delete(*tree.get_children())
+        for i, p in self._manual_items().items():
+            tree.insert("", "end", iid=i, text=p["entry"].get("name", i),
+                        values=(p["entry"].get("version", ""), p["latest_version"]))
+        n = len(tree.get_children())
+        self.manual_msg.set("Everything is up to date." if not n else
+                            f"{n} addon(s) need a manual download. Double-click a row to open its page.")
+
+    def manual_open_pages(self, all_rows=False):
+        items = self._manual_items()
+        ids = list(items) if all_rows else list(self.manual_tree.selection())
+        if not ids:
+            return self.manual_msg.set("Select an addon first (or use “Open all”).")
+        for i in ids[:10]:
+            if i in items:
+                webbrowser.open(self.mgr.manual_url(items[i]))
+
+    def manual_install(self):
+        paths = filedialog.askopenfilenames(parent=self.manual_win, title="Pick the downloaded addon zip(s)",
+                                            filetypes=[("Addon zip", "*.zip"), ("All files", "*.*")])
+        if not paths or self.busy:
+            return
+
+        def work():
+            for p in paths:
+                try:
+                    self.mgr.install_local(p)
+                except wowam.WowamError as e:  # one bad zip shouldn't stop the rest
+                    self.log(f"! {os.path.basename(p)}: {e}")
+            return self.mgr.check_updates()  # what is still outdated after installing
+
+        def done(pending):
+            self.pending = {p["id"]: p for p in pending}
+            self.manual_refresh()
+        self.run_bg("Installing from file", work, done)
 
     def _install_refs(self, refs):
         """Worker-thread install; a blocked addon opens its CurseForge page for a manual download."""

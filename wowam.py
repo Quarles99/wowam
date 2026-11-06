@@ -859,10 +859,14 @@ class Manager:
             self.save_state()
         return out
 
-    def manual_notice(self, p: dict) -> str:
+    def manual_url(self, p: dict) -> str:
+        """The CurseForge page of the exact file to download for a pending update (or the addon page)."""
         url = p["entry"].get("url") or (p["mod"] or {}).get("links", {}).get("websiteUrl", "")
         fid = p.get("latest_file_id")
-        where = f"{url}/files/{fid}" if (url and fid) else url
+        return f"{url}/files/{fid}" if (url and fid) else url
+
+    def manual_notice(self, p: dict) -> str:
+        where = self.manual_url(p)
         return (f"{p['entry']['name']}: {p['entry'].get('version')}  →  {p['latest_version']} "
                 f"(manual download: {where}, then `wowam install-file <zip>`)")
 
