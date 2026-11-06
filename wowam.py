@@ -712,8 +712,11 @@ class Manager:
             elif tagged:
                 mod = self.cf.mod(int(max(tagged, key=lambda k: len(tagged[k]))))
             else:
-                raise WowamError(f"{p.name}: no X-Curse-Project-ID in its .toc files; "
-                                 f"say which addon it is with --mod <slug|id|url>.")
+                mod = self._identify_zip(p.name, staging, folders)
+                if not mod:
+                    raise WowamError(f"{p.name}: no X-Curse-Project-ID in its .toc files and no CurseForge addon "
+                                     f"has a file with this name; say which addon it is with --mod <slug|id|url>.")
+                self.log(f"  · {p.name} carries no project ID; it matches {mod['name']} by file name.")
             try:  # identify the exact CurseForge file by its file name, so updates can be detected
                 files = self.cf.mod_files(mod["id"], None)  # every flavor: catch a zip for the wrong game
             except WowamError:
@@ -743,6 +746,32 @@ class Manager:
                      version=None if match else f"{toc_ver or p.stem} (manual)",
                      extra={"manual": True, "toc_version": toc_ver})
         return self.installed[str(mod["id"])]
+
+    def _identify_zip(self, zip_name: str, staging: Path, folders: list[str]) -> dict | None:
+        """Zips from some authors have no project ID in the .toc. Search CurseForge for the addon's title and
+        folder names, and accept a project only if it has a file named exactly like the zip."""
+        norm = lambda n: re.sub(r"\s*\(\d+\)(?=\.zip$)", "", (n or "").lower())
+        terms: list[str] = []
+        for f in folders:
+            t = re.sub(r"\|c[0-9a-fA-F]{8}|\|r", "", read_toc(staging / f).get("Title", "")).strip()
+            terms += [t, re.sub(r"(?<=[a-z])(?=[A-Z])", " ", f)]
+        seen: set = set()
+        for term in dict.fromkeys(t for t in terms if t):
+            try:
+                mods = self.cf.search_any(term).get("mods", [])[:6]
+            except WowamError:
+                continue
+            for mod in mods:
+                if mod["id"] in seen:
+                    continue
+                seen.add(mod["id"])
+                try:
+                    files = self.cf.mod_files(mod["id"], None)
+                except WowamError:
+                    continue
+                if any(norm(f.get("fileName")) == norm(zip_name) for f in files):
+                    return mod
+        return None
 
     def install_github(self, spec: str, asset_pattern: str | None = None, pinned: bool = False) -> None:
         """Install/update from the latest GitHub release zip of 'owner/repo' (or a github.com URL)."""

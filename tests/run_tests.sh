@@ -79,6 +79,8 @@ mkzip "$M/untagged.zip" 1.0 ""; $W install-file "$M/untagged.zip" 2>&1 | tee /tm
 ok "untagged zip asks for --mod" 'grep -q -- "--mod" /tmp/ut.txt'
 $W install-file "$M/untagged.zip" --mod nodist >/dev/null
 ok "--mod override works" 'grep -q "1.0" "$A/NoDist/NoDist.toc"'
+mkdir -p "$M/u" && mkzip "$M/u/3001.zip" 2.0 ""; $W install-file "$M/u/3001.zip" 2>&1 | tee /tmp/id.txt
+ok "untagged zip is identified by its file name" 'grep -q "matches NoDist by file name" /tmp/id.txt'
 python3 - "$M/site-only.zip" <<'PY'
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "w") as z:
