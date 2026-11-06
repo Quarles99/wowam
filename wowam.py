@@ -34,7 +34,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 API_BASE = os.environ.get("WOWAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 WOW_GAME_ID = 1
