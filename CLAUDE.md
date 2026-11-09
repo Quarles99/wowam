@@ -42,7 +42,7 @@ The owner is Will. He runs it on Windows and sometimes on Bazzite Linux (he dual
 - **Distribution opt-out**: when `downloadUrl` is null and `/download-url` returns null, raise `ManualDownload` with the addon's CurseForge page and the `install-file` hint.
   **Do not** build `edge.forgecdn.net` URLs to get around it. That is the author's choice. Details!, DBM, Auctionator, Leatrix Plus and others are opted out.
   The supported routes are: the author's GitHub release zips (`install --github`, fully automatic), or a zip the user downloads from CurseForge themselves (`install-file`).
-- **Manual installs** (`install_local`): the project comes from `X-Curse-Project-ID` in the zip's `.toc`, else the `X-Website` CurseForge slug, else `--mod`. The zip is matched to a CurseForge file by file name; failing that, `toc_version` is compared with the latest file's name.
+- **Manual installs** (`install_local`): with `delete_zip=True` the zip is removed after a successful install, never after a failure. The GUI always passes it; the CLI only with `install-file --delete-zip`. The project comes from `X-Curse-Project-ID` in the zip's `.toc`, else the `X-Website` CurseForge slug, else `--mod`. The zip is matched to a CurseForge file by file name; failing that, `toc_version` is compared with the latest file's name.
   `check`/`update` report manual addons' newer versions with a link instead of failing (`blocked` in `check_updates`), and never count them as failures.
 - **`scan`** adopts existing addons through the `## X-Curse-Project-ID` line in their `.toc` files. Adopted entries get `file_id: None`, so the next `update` reinstalls them once to sync (blocked addons are compared by `.toc` version instead).
 

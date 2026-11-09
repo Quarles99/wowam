@@ -688,9 +688,10 @@ class Manager:
         self.installed[mod_id].update(extra or {})
         self.save_state()
 
-    def install_local(self, path: str, mod_ref: str | None = None) -> dict:
+    def install_local(self, path: str, mod_ref: str | None = None, delete_zip: bool = False) -> dict:
         """Install a zip the user downloaded by hand (for addons whose author blocks third-party downloads).
-        The CurseForge project is read from X-Curse-Project-ID in the .toc unless mod_ref is given."""
+        The CurseForge project is read from X-Curse-Project-ID in the .toc unless mod_ref is given.
+        With delete_zip, the zip is removed once it is installed; a zip that failed to install is always kept."""
         p = Path(path).expanduser()
         if not p.is_file():
             raise WowamError(f"No such file: {p}")
@@ -745,6 +746,12 @@ class Manager:
         self._commit(mod, staging, folders, file=match,
                      version=None if match else f"{toc_ver or p.stem} (manual)",
                      extra={"manual": True, "toc_version": toc_ver})
+        if delete_zip:  # only reached after a successful install; the addon is in AddOns now
+            try:
+                p.unlink()
+                self.log(f"  · removed {p.name}")
+            except OSError as e:  # e.g. still open in a browser; harmless
+                self.log(f"  ! could not remove {p}: {e}")
         return self.installed[str(mod["id"])]
 
     def _identify_zip(self, zip_name: str, staging: Path, folders: list[str]) -> dict | None:
@@ -1239,6 +1246,7 @@ def main(argv=None) -> int:
     i.add_argument("--asset", help="regex to pick the release zip when a GitHub release has several")
     f = sub.add_parser("install-file", help="install a zip you downloaded by hand (author blocks third-party downloads)")
     f.add_argument("files", nargs="+"); f.add_argument("--mod", help="slug/id/URL if the zip has no X-Curse-Project-ID")
+    f.add_argument("--delete-zip", action="store_true", help="delete each zip after it installed successfully")
     sub.add_parser("list", help="list installed addons")
     sub.add_parser("check", help="check for updates without installing")
     u = sub.add_parser("update", help="update all (or named) addons"); u.add_argument("refs", nargs="*")
@@ -1377,7 +1385,7 @@ def main(argv=None) -> int:
                     print(f"! {e}", file=sys.stderr)
         elif a.cmd == "install-file":
             for path in a.files:
-                m.install_local(path, mod_ref=a.mod)
+                m.install_local(path, mod_ref=a.mod, delete_zip=a.delete_zip)
         elif a.cmd == "list":
             src = lambda e: e.get("source") or ("manual" if e.get("manual") else "curseforge")
             rows = [[e["name"][:36], (e.get("version") or "")[:40], e.get("release_type") or "?", src(e),

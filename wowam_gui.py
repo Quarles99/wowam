@@ -466,7 +466,7 @@ class App:
         paths = filedialog.askopenfilenames(title="Pick the downloaded addon zip(s)",
                                             filetypes=[("Addon zip", "*.zip"), ("All files", "*.*")])
         if paths:
-            self.run_bg("Installing from file", lambda: [self.mgr.install_local(p) for p in paths])
+            self.run_bg("Installing from file", lambda: [self.mgr.install_local(p, delete_zip=True) for p in paths])
 
     def open_manual(self):
         """Addons whose authors block third-party downloads: open each file's page, then install the zip here."""
@@ -544,7 +544,7 @@ class App:
         def work():
             for p in paths:
                 try:
-                    self.mgr.install_local(p)
+                    self.mgr.install_local(p, delete_zip=True)
                 except wowam.WowamError as e:  # one bad zip shouldn't stop the rest
                     self.log(f"! {os.path.basename(p)}: {e}")
             return self.mgr.check_updates()  # what is still outdated after installing
