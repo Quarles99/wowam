@@ -135,10 +135,10 @@ DEFAULT_CONFIG = {
     "install_dependencies": True,
     "auto_check_minutes": 60,
     "auto_update": False,
-    "theme": "auto",  # GUI colors: auto (follow the OS), light or dark
+    "theme": "warcraft",  # GUI look: warcraft (classic WoW UI art), or plain auto (follow the OS), light or dark
     "check_for_updates": True,  # once a day, look for a newer wowam on GitHub (the GUI offers a one-click update)
 }
-THEMES = ("auto", "light", "dark")
+THEMES = ("warcraft", "auto", "light", "dark")
 
 
 def system_prefers_dark() -> bool:
@@ -1230,7 +1230,7 @@ def main(argv=None) -> int:
     c.add_argument("--addons-dir", dest="set_dir")
     c.add_argument("--flavor", dest="set_flavor"); c.add_argument("--channel", choices=CHANNELS)
     c.add_argument("--deps", choices=["on", "off"], help="auto-install required dependencies")
-    c.add_argument("--theme", choices=THEMES, help="GUI colors (auto follows the OS)")
+    c.add_argument("--theme", choices=THEMES, help="GUI look: warcraft (classic WoW art), or plain auto (follows the OS), light, dark")
 
     sub.add_parser("detect", help="find WoW AddOns folders on this machine")
     sub.add_parser("flavors", help="list CurseForge WoW game-flavor IDs")

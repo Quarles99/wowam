@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import random
 import sys
 import threading
 import time
@@ -13,13 +14,22 @@ from pathlib import Path
 try:
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
+    from tkinter import font as tkfont
 except ImportError:  # e.g. Fedora/Bazzite without python3-tkinter
     tk = None
 
 import wowam
+import wowam_art
 
-# Colors are plain data so both themes stay easy to tweak. Text/background pairs are all >= 4.5:1 contrast.
+ICON = 28  # addon icon size in the lists
+# Colors are plain data so the themes stay easy to tweak. Text/background pairs are all >= 4.5:1 contrast.
+# "warcraft" borrows the game's own: gold NORMAL_FONT_COLOR text, red errors, uncommon-green for updates,
+# poor-quality grey for pinned addons, quest-log parchment for the log.
 PALETTES = {
+    "warcraft": dict(bg="#1b1611", fg="#ffd100", field="#0b0907", btn="#5c0c0c", btn_active="#8c1a14",
+                     border="#6b6257", sel="#4a3608", sel_fg="#ffffff", accent="#ffd100", muted="#a8a090",
+                     error="#ff4040", update="#1eff00", pinned="#9d9d9d", text="#f2e8d0",
+                     log_bg="#d4ad72", log_fg="#2a1906"),
     "light": dict(bg="#f3f3f3", fg="#1f1f1f", field="#ffffff", btn="#e4e4e4", btn_active="#d4d4d4",
                   border="#c4c4c4", sel="#cfe3f7", sel_fg="#000000", accent="#1a6fd1", muted="#5f5f5f",
                   error="#b00020", update="#9a5b00", pinned="#707070"),
@@ -27,6 +37,25 @@ PALETTES = {
                  border="#4b4e55", sel="#2d4f7c", sel_fg="#ffffff", accent="#5b9cf5", muted="#9a9da3",
                  error="#ff7b7b", update="#e5a63a", pinned="#8f9298"),
 }
+
+
+NAMED_FONTS = ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkMenuFont", "TkCaptionFont", "TkTooltipFont")
+
+
+def wow_font_family(root, addons_dir=None) -> str:
+    """WoW's UI font, Friz Quadrata: installed on the system, or a FRIZQT__.TTF found in a WoW folder, an addon
+    or picked in Settings (loaded for this process only). Else the closest classic serif this system has."""
+    font_file = wowam_art.find_wow_font(addons_dir)
+    if font_file:
+        family = wowam_art.register_font(font_file)
+        if family and family.lower() in {f.lower() for f in tkfont.families(root)}:
+            return family
+    have = {f.lower(): f for f in tkfont.families(root)}
+    for want in ("Friz Quadrata TT", "Friz Quadrata Std", "Friz Quadrata", "Georgia", "Palatino Linotype",
+                 "Book Antiqua", "DejaVu Serif", "Noto Serif", "Liberation Serif", "Times New Roman"):
+        if want.lower() in have:
+            return have[want.lower()]
+    return tkfont.nametofont("TkDefaultFont").cget("family")
 
 
 def set_dark_titlebar(win, dark: bool) -> None:
@@ -63,6 +92,21 @@ class App:
 
         self.update_info: dict | None = None
         self.next_app_check = 0.0
+        self.kit: dict | None = None        # Warcraft theme images (wowam_art.build_kit), once the art is on disk
+        self.art_imgs: dict = {}            # their tk.PhotoImages (Tk forgets an image nobody references)
+        self.wow_theme_ready = False
+        self.icons = wowam_art.IconStore()
+        self.icon_photos: dict = {}         # icon key -> PhotoImage
+        self.icon_busy: set = set()         # keys a worker is looking up
+        self.icon_trees: list = []          # trees whose rows (iid = icon key) show icons
+        self.blank_icon = tk.PhotoImage(width=ICON, height=ICON)  # keeps names aligned while icons load
+        self.fonts = {"title": tkfont.Font(root, size=13, weight="bold"),
+                      "button": tkfont.Font(root, size=9, weight="bold"),
+                      "log": tkfont.Font(root, size=10)}
+        self.plain_fonts = {n: tkfont.nametofont(n).cget("family") for n in NAMED_FONTS}
+        self.wow_family = wow_font_family(root, self.cfg.get("addons_dir") or None)
+        self.header = ttk.Label(root, style="Header.TLabel", compound="center", anchor="center",
+                                text="WoW Addon Manager")  # the dialog-title plaque, Warcraft theme only
         self.banner = ttk.Frame(root, style="Banner.TFrame", padding=(10, 6))  # shown only when wowam has an update
         self.bar = bar = ttk.Frame(root, padding=(8, 8, 8, 4))
         bar.pack(fill="x")
@@ -81,9 +125,10 @@ class App:
 
         pane = ttk.PanedWindow(root, orient="vertical")
         pane.pack(fill="both", expand=True, padx=8)
-        tree_frame = ttk.Frame(pane)
+        tree_frame = ttk.Frame(pane, style="Panel.TFrame")
         cols = ("version", "status", "channel")
         self.tree = ttk.Treeview(tree_frame, columns=cols, selectmode="extended")
+        self.icon_trees.append(self.tree)
         self.tree.heading("#0", text="Addon")
         self.tree.heading("version", text="Installed version")
         self.tree.heading("status", text="Status")
@@ -94,21 +139,27 @@ class App:
         self.tree.column("channel", width=90)
         sb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")  # first, so a wide list can't squeeze it out
         self.tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
         pane.add(tree_frame, weight=4)
 
-        log_frame = ttk.Frame(pane)
-        self.logbox = tk.Text(log_frame, height=7, state="disabled", wrap="word")
-        self.logbox.pack(fill="both", expand=True)
+        log_frame = ttk.Frame(pane, style="Panel.TFrame")
+        self.logbox = LogView(log_frame)
         pane.add(log_frame, weight=1)
+        self.panels = (tree_frame, log_frame)
 
         self.status = tk.StringVar(value="Ready")
-        ttk.Label(root, textvariable=self.status, anchor="w", padding=(8, 4)).pack(fill="x")
+        self.status_bar = ttk.Frame(root)
+        self.status_bar.pack(fill="x")
+        ttk.Label(self.status_bar, textvariable=self.status, anchor="w", padding=(8, 8)).pack(
+            side="left", fill="x", expand=True)
+        self.frog_count = ttk.Label(self.status_bar, compound="left", padding=(4, 0, 10, 0))  # shown once you catch one
+        self.frog = Frog(self, self.status_bar)
 
         self.apply_theme()
         root.after(100, self._drain)
         root.after(1000, self._tick)
+        self.load_art()
         if self._init_manager():
             self.refresh_list()
             self.check()
@@ -118,26 +169,36 @@ class App:
 
     # ------------------------------------------------------------ theme
     def resolve_theme(self) -> str:
-        t = str(self.cfg.get("theme") or "auto").lower()
+        t = str(self.cfg.get("theme") or "warcraft").lower()
         if t == "auto":
             return "dark" if wowam.system_prefers_dark() else "light"
-        return t if t in PALETTES else "light"
+        return t if t in PALETTES else "warcraft"
 
     def style_window(self, win):
         """Give a dialog the current theme's background and title bar (call right after creating it)."""
         win.configure(background=self.pal["bg"])
-        set_dark_titlebar(win, self.theme_name == "dark")
+        set_dark_titlebar(win, self.theme_name != "light")
+        if not getattr(win, "_backdrop", None):
+            # a frame under everything, so the gaps between widgets show the theme's texture, not a flat color
+            win._backdrop = ttk.Frame(win)
+            win._backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+            win._backdrop.lower()
 
-    def apply_theme(self):
+    def apply_theme(self, force=False):
         """(Re)style every widget. Cheap no-op when the resolved theme hasn't changed."""
         name = self.resolve_theme()
-        if name == self.theme_name:
+        if name == self.theme_name and not force:
             return
         self.theme_name = name
         p = self.pal = PALETTES[name]
+        wow = name == "warcraft"
+        if wow and self.kit is None:
+            self.load_art()  # until it arrives: the Warcraft colors on plain widgets
         s = ttk.Style()
         try:
-            s.theme_use("clam")  # the only built-in theme whose colors we can fully control
+            # clam is the only built-in theme whose colors we can fully control; wowam-warcraft is clam
+            # with the game's textures as its buttons, checkboxes, scrollbars, fields and frames
+            s.theme_use("wowam-warcraft" if wow and self._wow_theme() else "clam")
         except tk.TclError:
             pass
         s.configure(".", background=p["bg"], foreground=p["fg"], fieldbackground=p["field"],
@@ -149,7 +210,7 @@ class App:
         s.map("TButton", background=[("disabled", p["bg"]), ("active", p["btn_active"])],
               bordercolor=[("focus", p["accent"])])
         for w in ("TEntry", "TCombobox"):
-            s.configure(w, fieldbackground=p["field"], foreground=p["fg"], lightcolor=p["field"],
+            s.configure(w, fieldbackground=p.get("entry_field", p["field"]), foreground=p["fg"], lightcolor=p["field"],
                         darkcolor=p["field"], arrowcolor=p["fg"])
         s.map("TEntry", fieldbackground=[("disabled", p["bg"])])
         s.map("TCombobox", fieldbackground=[("readonly", p["field"]), ("disabled", p["bg"])],
@@ -165,7 +226,7 @@ class App:
         s.configure("TLabelframe", background=p["bg"], bordercolor=p["border"])
         s.configure("TLabelframe.Label", background=p["bg"], foreground=p["fg"])
         s.configure("Treeview", background=p["field"], fieldbackground=p["field"], foreground=p["fg"],
-                    rowheight=24)
+                    rowheight=ICON + 6)
         s.map("Treeview", background=[("selected", p["sel"])], foreground=[("selected", p["sel_fg"])])
         s.configure("Treeview.Heading", background=p["btn"], foreground=p["fg"], relief="flat",
                     lightcolor=p["btn"], darkcolor=p["btn"])
@@ -182,15 +243,157 @@ class App:
         self.root.option_add("*TCombobox*Listbox.foreground", p["fg"])
         self.root.option_add("*TCombobox*Listbox.selectBackground", p["sel"])
         self.root.option_add("*TCombobox*Listbox.selectForeground", p["sel_fg"])
-        self.logbox.configure(background=p["field"], foreground=p["fg"], insertbackground=p["fg"],
-                              selectbackground=p["sel"], selectforeground=p["sel_fg"],
-                              highlightbackground=p["border"], highlightcolor=p["accent"], relief="flat")
+        self._style_fonts(s, p, wow)
+        self.logbox.style(p.get("log_bg", p["field"]), p.get("log_fg", p["fg"]),
+                          self.fonts["log"] if wow else "TkFixedFont",
+                          self.art_imgs.get("parchment") if wow and self.wow_theme_ready else None)
         self.tree.tag_configure("update", foreground=p["update"])
         self.tree.tag_configure("pinned", foreground=p["pinned"])
+        art = wow and self.wow_theme_ready
+        for f in self.panels:
+            f.configure(padding=9 if art else 0)
+        self._show_header(art)
+        if self.icon_photos:  # the icon frame differs between the looks
+            self.icon_photos.clear()
+            self.refresh_list()
+        self.frog.restyle()
         self.style_window(self.root)
         for w in self.root.winfo_children():
             if isinstance(w, tk.Toplevel):
                 self.style_window(w)
+
+    def _style_fonts(self, s, p, wow):
+        # the game sets nearly all of its UI text in one face, so the Warcraft look does too
+        for n in NAMED_FONTS:
+            tkfont.nametofont(n).configure(family=self.wow_family if wow else self.plain_fonts[n])
+        for f in self.fonts.values():
+            f.configure(family=self.wow_family if wow else self.plain_fonts["TkDefaultFont"])
+        btn = self.fonts["button"] if wow else "TkDefaultFont"
+        s.configure("TButton", font=btn, padding=(2, 0) if wow and self.wow_theme_ready else (8, 3))
+        s.configure("Treeview.Heading", font=btn)
+        s.configure("Header.TLabel", font=self.fonts["title"], foreground=p["fg"], background=p["bg"])
+        if wow:  # the game's button text: gold, white under the mouse, grey when disabled
+            s.map("TButton", foreground=[("disabled", "#808080"), ("active", "#ffffff")])
+            s.configure("Treeview.Heading", background="#2a2119", lightcolor="#2a2119", darkcolor="#2a2119",
+                        bordercolor="#4a4238")
+            s.map("Treeview.Heading", background=[("active", "#3a2e22")])
+            s.configure("Treeview", bordercolor=p["field"], lightcolor=p["field"], darkcolor=p["field"])
+        else:
+            s.map("TButton", foreground=[("disabled", p["muted"])])
+
+    def _show_header(self, show):
+        if not (show and self.kit):
+            self.header.pack_forget()
+            return
+        width = self.fonts["title"].measure(self.header.cget("text")) + 90
+        self.art_imgs["plaque"] = tk.PhotoImage(
+            master=self.root, data=wowam_art.plaque(self.kit, width).tk_data())
+        self.header.configure(image=self.art_imgs["plaque"])
+        if not self.header.winfo_manager():
+            self.header.pack(before=self.banner if self.banner.winfo_manager() else self.bar, pady=(8, 0))
+
+    def load_art(self):
+        """Get the classic UI textures (downloaded on first use, then cached) and build the theme's images
+        on a worker thread; the theme switches over when they're ready."""
+        if getattr(self, "_art_loading", False) or self.kit is not None:
+            return
+        self._art_loading = True
+        self.fonts["button"].configure(family=self.wow_family)
+        button_h = self.fonts["button"].metrics("linespace") + 9
+
+        def bg():
+            kit = None
+            try:
+                if wowam_art.ensure_art(log=self.log):
+                    art = wowam_art.load_art()
+                    if art:
+                        kit = wowam_art.build_kit(art, button_h=button_h)
+            except Exception as e:  # never let the look break the app
+                self.log(f"! Couldn't build the Warcraft look: {e!r}")
+            self.ui(lambda: self._art_ready(kit))
+        threading.Thread(target=bg, daemon=True).start()
+
+    def _art_ready(self, kit):
+        self._art_loading = False
+        if not kit:
+            return
+        self.kit = kit
+        if self.theme_name == "warcraft":
+            self.apply_theme(force=True)
+        self.icon_photos.clear()  # rebuilt from the disk cache, now in the game's icon frame
+        self.refresh_list()  # addons without an icon get the game's question-mark icon
+
+    def _wow_theme(self) -> bool:
+        """Create the wowam-warcraft ttk theme from the textures, once. False until they're loaded."""
+        if self.wow_theme_ready:
+            return True
+        if not self.kit:
+            return False
+        im = self.art_imgs
+        for k, v in self.kit.items():
+            if isinstance(v, wowam_art.Image) and k not in ("header", "question"):
+                im[k] = tk.PhotoImage(master=self.root, data=v.tk_data())
+        s = ttk.Style()
+        s.theme_create("wowam-warcraft", parent="clam")
+        s.theme_use("wowam-warcraft")
+        s.element_create("Wow.bg", "image", im["bg"], width=1, height=1, sticky="nsew")
+        s.element_create("Wow.listbg", "image", im["list"], width=1, height=1, sticky="nsew")
+        s.element_create("Wow.button", "image", im["button"], ("disabled", im["button_disabled"]),
+                         ("pressed", im["button_pressed"]), ("active", im["button_active"]),
+                         border=(10, 6, 10, 6), padding=(5, 2, 5, 2), sticky="nsew")
+        # stone under the button: ttk first fills a widget with its background color, which would show
+        # through the image's transparent rounded corners
+        s.layout("TButton", [("Wow.bg", {"sticky": "nswe"}), ("Wow.button", {"sticky": "nswe", "children": [
+            ("Button.padding", {"sticky": "nswe", "children": [("Button.label", {"sticky": "nswe"})]})]})])
+        s.element_create("Wow.check", "image", im["check_off"], ("disabled", im["check_disabled"]),
+                         ("pressed", im["check_pressed"]), ("selected", im["check_on"]), sticky="")
+        s.element_create("Wow.radio", "image", im["radio_off"], ("selected", im["radio_on"]), sticky="")
+        for style, el, part in (("TCheckbutton", "Wow.check", "Checkbutton"),
+                                ("TRadiobutton", "Wow.radio", "Radiobutton")):
+            s.layout(style, [(f"{part}.padding", {"sticky": "nswe", "children": [
+                (el, {"side": "left", "sticky": ""}),
+                (f"{part}.focus", {"side": "left", "sticky": "w", "children": [
+                    (f"{part}.label", {"sticky": "nswe"})]})]})])
+        # the scrollbar finds its parts by the last word of their names: thumb, uparrow, downarrow
+        s.element_create("Wow.thumb", "image", im["thumb"], sticky="")
+        s.element_create("Wow.uparrow", "image", im["arrow_up"], sticky="")
+        s.element_create("Wow.downarrow", "image", im["arrow_down"], sticky="")
+        s.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+            ("Wow.uparrow", {"side": "top", "sticky": ""}), ("Wow.downarrow", {"side": "bottom", "sticky": ""}),
+            ("Wow.thumb", {"sticky": "nswe"})]})])
+        s.element_create("Wow.field", "image", im["entry"], border=(8, 6, 8, 6), padding=(7, 4, 7, 4),
+                         sticky="nsew")
+        s.layout("TEntry", [("Wow.field", {"sticky": "nswe", "children": [
+            ("Entry.padding", {"sticky": "nswe", "children": [("Entry.textarea", {"sticky": "nswe"})]})]})])
+        s.element_create("Wow.panel", "image", im["panel"], border=24, sticky="nsew")
+        s.layout("Panel.TFrame", [("Wow.panel", {"sticky": "nswe"})])
+        # textured backgrounds, as in the game: stone behind everything, darker stone behind lists. width/height
+        # 1 keep the 256px tile from becoming every widget's minimum size; ttk tiles it from each widget's corner.
+        s.layout("TFrame", [("Wow.bg", {"sticky": "nswe"})])
+        for style in ("TPanedwindow", "Vertical.TPanedwindow", "Horizontal.TPanedwindow"):
+            s.layout(style, [("Wow.bg", {"sticky": "nswe"})])
+        s.layout("Vertical.Sash", [("Wow.bg", {"sticky": "nswe", "children": [("Sash.vgrip", {"sticky": "nswe"})]})])
+        s.layout("TLabel", [("Wow.bg", {"sticky": "nswe", "children": [
+            ("Label.padding", {"sticky": "nswe", "children": [("Label.label", {"sticky": "nswe"})]})]})])
+        for style in ("TCheckbutton", "TRadiobutton"):
+            s.layout(style, [("Wow.bg", {"sticky": "nswe", "children": s.layout(style)})])
+        s.layout("Treeview", [("Wow.listbg", {"sticky": "nswe", "children": [
+            ("Treeview.padding", {"sticky": "nswe", "children": [("Treeview.treearea", {"sticky": "nswe"})]})]})])
+        # rows are see-through; a selected one gets the gold quest-log glow
+        s.element_create("Wow.row", "image", im["clear"], ("selected", im["sel"]), sticky="nsew")
+        s.layout("Treeview.Row", [("Wow.row", {"sticky": "nswe"})])
+        s.layout("Heading", [("Wow.bg", {"sticky": "nswe"}), ("Treeheading.border", {"sticky": "nswe", "children": [
+            ("Treeheading.padding", {"sticky": "nswe", "children": [
+                ("Treeheading.image", {"side": "right", "sticky": ""}),
+                ("Treeheading.text", {"sticky": "we"})]})]})])
+        s.layout("Vertical.TScrollbar", [("Wow.listbg", {"sticky": "ns", "children": [
+            ("Wow.uparrow", {"side": "top", "sticky": ""}), ("Wow.downarrow", {"side": "bottom", "sticky": ""}),
+            ("Wow.thumb", {"sticky": "nswe"})]})])
+        w = PALETTES["warcraft"]
+        w.update(entry_field=self.kit["entry_field"], bg=self.kit["bg_color"], field=self.kit["list_color"],
+                 log_bg=self.kit["parchment_color"])
+        self.wow_theme_ready = True
+        return True
 
     # ------------------------------------------------------------ plumbing
     def log(self, msg):
@@ -201,10 +404,7 @@ class App:
             while True:
                 kind, payload = self.q.get_nowait()
                 if kind == "log":
-                    self.logbox.configure(state="normal")
-                    self.logbox.insert("end", payload + "\n")
-                    self.logbox.see("end")
-                    self.logbox.configure(state="disabled")
+                    self.logbox.append(payload)
                 elif kind == "call":
                     payload()
         except queue.Empty:
@@ -393,12 +593,68 @@ class App:
                 status, tag = "Needs sync", "update"
             else:
                 status, tag = "Up to date", ""
-            self.tree.insert("", "end", iid=mid, text=e.get("name", mid),
+            self.tree.insert("", "end", iid=mid, text=" " + e.get("name", mid), image=self.icon_for(mid),
                              values=(e.get("version", ""), status, e.get("channel") or "default"), tags=(tag,))
         for iid in sel:
             if self.tree.exists(iid):
                 self.tree.selection_add(iid)
         self.root.title(f"WoW Addon Manager — {len(items)} addons" + (f", {n_upd} updates" if n_upd else ""))
+        self.want_icons([(mid, e.get("folders") or [], None) for mid, e in items])
+
+    # ------------------------------------------------------------ icons
+    def icon_for(self, key):
+        return self.icon_photos.get(key) or self.blank_icon
+
+    def want_icons(self, wants):
+        """wants: [(key, folders, logo_url)]. Finds missing icons on a worker thread (cache, then the .toc's
+        IconTexture, then the CurseForge logo); rows pick them up as they arrive."""
+        todo = [w for w in wants if w[0] not in self.icon_photos and w[0] not in self.icon_busy]
+        if not todo:
+            return
+        self.icon_busy.update(w[0] for w in todo)
+        addons = self.mgr.addons if self.mgr else None
+        cf = self.mgr.cf if self.mgr else None
+
+        def bg():
+            left = []
+            for key, folders, url in todo:
+                img = self.icons.cached(key)
+                if img or self.icons.recently_missed(key):
+                    self.ui(lambda k=key, i=img: self._set_icon(k, i))
+                else:
+                    left.append((key, folders, url))
+            need = [int(k) for k, _, u in left if not u and k.isdigit()]
+            logos = {}
+            if need and cf:
+                try:
+                    logos = {str(m["id"]): wowam_art.logo_url(m) for m in cf.mods(need)}
+                except wowam.WowamError:
+                    logos = None  # offline: try again next time rather than remember "no icon"
+            for key, folders, url in left:
+                url = url or (logos or {}).get(key)
+                try:
+                    img = self.icons.fetch(key, addons, folders, url, remember_miss=logos is not None)
+                except Exception:  # a broken image must not take the list down
+                    img = None
+                self.ui(lambda k=key, i=img: self._set_icon(k, i))
+        threading.Thread(target=bg, daemon=True).start()
+
+    def _set_icon(self, key, img):
+        self.icon_busy.discard(key)
+        if img is None:
+            if not self.kit:
+                return
+            img = self.kit["question"]  # the game's "no icon" icon
+        try:
+            frame = self.kit["slot"] if self.kit and self.theme_name == "warcraft" else None
+            photo = tk.PhotoImage(master=self.root, data=wowam_art.framed(img, ICON, frame).tk_data())
+        except (tk.TclError, wowam_art.ImageError):
+            return
+        self.icon_photos[key] = photo
+        self.icon_trees = [t for t in self.icon_trees if t.winfo_exists()]
+        for t in self.icon_trees:
+            if t.exists(key):
+                t.item(key, image=photo)
 
     def selected(self):
         return list(self.tree.selection()) if self.mgr else []
@@ -503,13 +759,14 @@ class App:
         box = ttk.Frame(f)
         box.pack(fill="both", expand=True, pady=8)
         tree = self.manual_tree = ttk.Treeview(box, columns=("have", "new"), selectmode="extended", height=8)
+        self.icon_trees.append(tree)
         for col, text, w in (("#0", "Addon", 240), ("have", "Installed", 200), ("new", "Download this file", 240)):
             tree.heading(col, text=text)
             tree.column(col, width=w, stretch=(col == "#0"))
         sb = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
-        tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+        tree.pack(side="left", fill="both", expand=True)
         self.manual_msg = tk.StringVar()
         ttk.Label(f, textvariable=self.manual_msg).pack(anchor="w")
         row = ttk.Frame(f)
@@ -535,7 +792,7 @@ class App:
         tree = self.manual_tree
         tree.delete(*tree.get_children())
         for i, p in self._manual_items().items():
-            tree.insert("", "end", iid=i, text=p["entry"].get("name", i),
+            tree.insert("", "end", iid=i, text=" " + p["entry"].get("name", i), image=self.icon_for(i),
                         values=(p["entry"].get("version", ""), p["latest_version"]))
         n = len(tree.get_children())
         self.manual_msg.set("Everything is up to date." if not n else
@@ -598,6 +855,7 @@ class App:
         sort_box = ttk.Combobox(browse_bar, textvariable=sort_var, values=list(sorts), state="readonly", width=18)
         sort_box.pack(side="left", padx=6)
         tree = ttk.Treeview(win, columns=("dl", "summary"), selectmode="extended")
+        self.icon_trees.append(tree)
         tree.heading("#0", text="Name"); tree.heading("dl", text="Downloads"); tree.heading("summary", text="Summary")
         tree.column("#0", width=230); tree.column("dl", width=90, anchor="e"); tree.column("summary", width=420)
         tree.pack(fill="both", expand=True, padx=8)
@@ -618,8 +876,9 @@ class App:
                 mark = "  ✓" if iid in self.mgr.installed else ""
                 if h.get("allowModDistribution") is False:
                     mark += "  (manual download)"
-                tree.insert("", "end", iid=iid, text=h["name"] + mark,
+                tree.insert("", "end", iid=iid, text=" " + h["name"] + mark, image=self.icon_for(iid),
                             values=(f"{h.get('downloadCount', 0):,.0f}", h.get("summary", "")))
+            self.want_icons([(str(h["id"]), (), wowam_art.logo_url(h)) for h in mods])
 
         def run(work, append, describe):
             state["gen"] += 1
@@ -775,7 +1034,28 @@ class App:
         row("AddOns folder", dir_row, ttk.Button(f, text="Detect", command=detect))
         row("Game flavor", ttk.Combobox(f, textvariable=v["flavor"], values=["auto", "forever", "retail", "classic"]))
         row("Release channel", ttk.Combobox(f, textvariable=v["channel"], values=list(wowam.CHANNELS), state="readonly"))
-        row("Theme", ttk.Combobox(f, textvariable=v["theme"], values=list(wowam.THEMES), state="readonly"))
+        def pick_font():
+            path = filedialog.askopenfilename(parent=win, title="Pick WoW's font file (FRIZQT__.TTF)",
+                                              filetypes=[("Font", "*.ttf *.otf"), ("All files", "*.*")])
+            if not path:
+                return
+            family = wowam_art.ttf_family(path)
+            if not family:
+                return messagebox.showerror("Font", "That doesn't look like a font file.", parent=win)
+            dest = wowam_art.fonts_dir() / Path(path).name
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                for old in dest.parent.glob("*"):
+                    old.unlink()
+                dest.write_bytes(Path(path).read_bytes())
+            except OSError as e:
+                return messagebox.showerror("Font", str(e), parent=win)
+            self.wow_family = wow_font_family(self.root, self.cfg.get("addons_dir") or None)
+            self.apply_theme(force=True)
+            messagebox.showinfo("Font", f"Using {self.wow_family} for the Warcraft look.", parent=win)
+
+        row("Theme", ttk.Combobox(f, textvariable=v["theme"], values=list(wowam.THEMES), state="readonly"),
+            ttk.Button(f, text="WoW font…", command=pick_font))
         row("Auto-check every (min, 0 = off)", ttk.Entry(f, textvariable=v["auto_check_minutes"], width=8))
         row("", ttk.Checkbutton(f, text="Install updates automatically (not just notify)", variable=v["auto_update"]))
         row("", ttk.Checkbutton(f, text="Install required dependencies", variable=v["install_dependencies"]))
@@ -825,6 +1105,183 @@ class App:
         f.columnconfigure(1, weight=1)
 
 
+class LogView:
+    """The activity log. A Canvas rather than a Text widget, so the Warcraft look can lay quest parchment
+    behind the lines (a Text widget can't show an image under its text). Right-click copies the log."""
+    PAD, MAX_LINES = 8, 500
+
+    def __init__(self, parent):
+        self.c = tk.Canvas(parent, height=110, highlightthickness=0, borderwidth=0)
+        self.sb = ttk.Scrollbar(parent, orient="vertical", command=self.c.yview)
+        self.c.configure(yscrollcommand=self.sb.set)
+        self.sb.pack(side="right", fill="y")
+        self.c.pack(side="left", fill="both", expand=True)
+        self.lines: list = []
+        self.fg, self.font, self.tile = "#000000", "TkFixedFont", None
+        self.c.bind("<Configure>", lambda _e: self.relayout())
+        self.c.bind("<MouseWheel>", lambda e: self.c.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        self.c.bind("<Button-4>", lambda _e: self.c.yview_scroll(-1, "units"))
+        self.c.bind("<Button-5>", lambda _e: self.c.yview_scroll(1, "units"))
+        self.menu = tk.Menu(self.c, tearoff=0)
+        self.menu.add_command(label="Copy log", command=self.copy)
+        self.c.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
+
+    def text(self) -> str:
+        return "\n".join(self.c.itemcget(i, "text") for i in self.lines)
+
+    def copy(self):
+        self.c.clipboard_clear()
+        self.c.clipboard_append(self.text())
+
+    def _width(self):
+        return max(60, self.c.winfo_width() - 2 * self.PAD)
+
+    def _bottom(self):
+        box = self.c.bbox(self.lines[-1]) if self.lines else None
+        return box[3] + 2 if box else self.PAD
+
+    def append(self, line: str):
+        at_end = self.c.yview()[1] >= 0.999
+        self.lines.append(self.c.create_text(self.PAD, self._bottom(), anchor="nw", text=line, width=self._width(),
+                                             fill=self.fg, font=self.font))
+        if len(self.lines) > self.MAX_LINES:
+            self.c.delete(self.lines.pop(0))
+            self.relayout()
+        self._region()
+        if at_end:
+            self.c.yview_moveto(1.0)
+
+    def relayout(self):
+        y = self.PAD
+        for i in self.lines:
+            self.c.itemconfigure(i, width=self._width())
+            self.c.coords(i, self.PAD, y)
+            y = self.c.bbox(i)[3] + 2
+        self._region()
+
+    def _region(self):
+        w, h = self.c.winfo_width(), max(self.c.winfo_height(), self._bottom() + self.PAD)
+        self.c.configure(scrollregion=(0, 0, w, h))
+        self.c.delete("bg")
+        if self.tile:  # parchment under the whole scrollable area
+            tw, th = self.tile.width(), self.tile.height()
+            for x in range(0, w, tw):
+                for y in range(0, h, th):
+                    self.c.create_image(x, y, image=self.tile, anchor="nw", tags="bg")
+            self.c.tag_lower("bg")
+
+    def style(self, bg, fg, font, tile=None):
+        self.fg, self.font, self.tile = fg, font, tile
+        self.c.configure(background=bg)
+        for i in self.lines:
+            self.c.itemconfigure(i, fill=fg, font=font)
+        self.relayout()
+
+
+class Frog:
+    """Easter egg: now and then a frog hops onto the status bar, sits a while, and hops off again.
+    Click it and it leaps away; the frog counter (saved in the config as "frogs") goes up by one."""
+    HOP, FRAMES, FRAME_MS = 30, 9, 28
+
+    def __init__(self, app: "App", bar):
+        self.app, self.bar = app, bar
+        self.sit = tk.PhotoImage(master=app.root, data=wowam_art.frog().tk_data())
+        self.leap = tk.PhotoImage(master=app.root, data=wowam_art.frog(leap=True).tk_data())
+        self.tiny = tk.PhotoImage(master=app.root, data=wowam_art.frog(scale=1).tk_data())
+        # a ttk label: in the Warcraft look it draws the stone texture under the frog's transparent pixels
+        self.lbl = ttk.Label(bar, image=self.sit, padding=0, cursor="hand2")
+        self.lbl.bind("<Button-1>", self.clicked)
+        self.active = self.caught = False
+        self.x, self.job = 0.0, None
+        self.count = int(app.cfg.get("frogs") or 0)
+        self.show_count()
+        self.schedule(first=True)
+
+    @staticmethod
+    def wait_seconds(first=False) -> float:
+        override = os.environ.get("WOWAM_FROG_SECONDS")  # for tests (and the impatient)
+        if override:
+            return float(override)
+        return random.uniform(120, 420) if first else random.uniform(300, 1200)
+
+    def schedule(self, first=False):
+        self.job = self.app.root.after(int(self.wait_seconds(first) * 1000), self.appear)
+
+    def restyle(self):
+        self.app.frog_count.configure(image=self.tiny)
+
+    def show_count(self):
+        lbl = self.app.frog_count
+        if self.count:
+            lbl.configure(image=self.tiny, text=f"× {self.count}")
+            if not lbl.winfo_manager():
+                lbl.pack(side="right", before=self.app.status_bar.winfo_children()[0])
+        else:
+            lbl.pack_forget()
+
+    def ground(self) -> int:
+        return max(0, self.bar.winfo_height() - self.sit.height() - 2)
+
+    def appear(self):
+        width = self.bar.winfo_width()
+        if self.active or width < 200 or not self.bar.winfo_viewable():
+            return self.schedule()
+        self.active, self.caught = True, False
+        self.x = float(width + 2)
+        self.lbl.place(x=int(self.x), y=self.ground())
+        self.lbl.lift()
+        self.hop_to(random.randint(int(width * 0.4), int(width * 0.8)), self.sit_a_while)
+
+    def hop_to(self, target, then):
+        if abs(target - self.x) < 4:
+            return then()
+        dx = max(-self.HOP, min(self.HOP, target - self.x))
+        self.hop(dx, 9, lambda: self.hop_to(target, then))
+
+    def hop(self, dx, height, then, frames=None, land=True):
+        frames = frames or self.FRAMES
+        start, i = self.x, [0]
+
+        def step():
+            i[0] += 1
+            t = i[0] / frames
+            self.x = start + dx * t
+            y = self.ground() - (height * 4 * t * (1 - t) if land else height * t)
+            flying = t < 1 or not land
+            self.lbl.configure(image=self.leap if flying else self.sit)
+            self.lbl.place(x=int(self.x), y=int(y))
+            if i[0] < frames:
+                self.job = self.app.root.after(self.FRAME_MS, step)
+            else:
+                self.job = self.app.root.after(random.randint(180, 520) if land else 1, then)
+        step()
+
+    def sit_a_while(self):
+        self.job = self.app.root.after(random.randint(12_000, 30_000), self.leave)
+
+    def leave(self):
+        self.hop_to(-self.sit.width() - 4, self.gone)
+
+    def gone(self):
+        self.lbl.place_forget()
+        self.lbl.configure(image=self.sit)
+        self.active = False
+        self.schedule()
+
+    def clicked(self, _event=None):
+        if not self.active or self.caught:
+            return
+        self.caught = True
+        if self.job:
+            self.app.root.after_cancel(self.job)
+        self.count += 1
+        self.app.cfg["frogs"] = self.count
+        wowam.update_config_file(frogs=self.count)
+        self.show_count()
+        # one big leap straight up and out of sight (the status bar clips it)
+        self.hop(random.choice((-12, 12)), self.ground() + self.sit.height() + 8, self.gone, frames=8, land=False)
+
+
 FLAVOR_LABELS = {"forever": "WoW Forever", "retail": "Retail", "classic": "Classic Era"}
 
 
@@ -872,7 +1329,8 @@ class SetupWizard:
         [self.page_key, self.page_wow, self.page_finish][page]()
 
     def heading(self, text):
-        ttk.Label(self.body, text=text, font=("TkDefaultFont", 14, "bold")).pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.body, text=text, font=(self.app.fonts["title"].cget("family"), 14, "bold")).pack(
+            anchor="w", pady=(0, 8))
 
     def para(self, text, **kw):
         ttk.Label(self.body, text=text, wraplength=600, justify="left", **kw).pack(anchor="w", pady=2)

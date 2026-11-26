@@ -1,5 +1,5 @@
 """Minimal fake CurseForge API for end-to-end testing wowam."""
-import io, json, re, sys, threading, zipfile
+import io, json, os, re, struct, sys, threading, zipfile, zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
@@ -57,6 +57,22 @@ def gh_release(repo):
             "assets": [{"name": n, "browser_download_url": f"{BASE}/gh/{repo.split('/')[1]}/{tag}/{n}"} for n in names]}
 
 
+def png(w, h, rgba):
+    """A solid-color PNG (stand-in for the UI textures and addon logos)."""
+    raw = b"".join(b"\x00" + bytes(rgba) * w for _ in range(h))
+    chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+# texture sizes match the real files, since the theme crops them by pixel position
+ART_SIZES = {"UI-DialogBox-Border.PNG": (256, 32), "UI-DialogBox-Header.PNG": (256, 64), "UI-RADIOBUTTON.PNG": (64, 16),
+             "Common-Input-Border.PNG": (128, 32), "INV_Misc_QuestionMark.PNG": (64, 64)}
+ART_HITS = []  # paths requested, so tests can check the art is fetched only once
+# logos: 100 PNG, 600 JPEG, 400 a broken link, the rest none
+LOGOS = {100: "logo/100.png", 600: "logo/600.jpg", 400: "logo/missing.png"}
+
+
 def file_obj(fid):
     f = FILES[fid]
     return {"id": fid, "modId": f["modId"], "displayName": f["displayName"], "fileName": f"{fid}.zip",
@@ -70,7 +86,8 @@ def file_obj(fid):
 def mod_obj(mid):
     name, slug = MODS[mid]
     return {"id": mid, "gameId": 1, "name": name, "slug": slug, "summary": f"{name} summary",
-            "downloadCount": mid * 1000, "allowModDistribution": mid != 300, "links": {"websiteUrl": f"https://www.curseforge.com/wow/addons/{slug}"},
+            "downloadCount": mid * 1000, "allowModDistribution": mid != 300,
+            "logo": {"thumbnailUrl": f"{BASE}/{LOGOS[mid]}"} if mid in LOGOS else None, "links": {"websiteUrl": f"https://www.curseforge.com/wow/addons/{slug}"},
             "latestFilesIndexes": [{"fileId": fid, "gameVersionTypeId": FILES[fid].get("flavor", RETAIL), "releaseType": FILES[fid]["releaseType"],
                                     "gameVersion": "11.2.5", "filename": f"{fid}.zip"} for fid in LIVE[mid]]}
 
@@ -105,6 +122,21 @@ class H(BaseHTTPRequestHandler):
             return self.send(None, raw=(digest + "  wowam.exe\n").encode(), ctype="text/plain")
         m = re.fullmatch(r"/gh/(\w+)/([^/]+)/(.+\.zip)", p)
         if m: return self.send(None, raw=zip_of([("GhAddon", m[2])]), ctype="application/zip")
+        m = re.fullmatch(r"/art/(.+)", p)
+        if m:
+            ART_HITS.append(m[1])
+            name = m[1].rsplit("/", 1)[-1]
+            if m[1].startswith("Missing/"):
+                return self.send({"error": "nf"}, 404)
+            w, h = ART_SIZES.get(name, (128, 32) if "Panel-Button" in name else (32, 32))
+            return self.send(None, raw=png(w, h, (120, 20, 20, 200)), ctype="image/png")
+        if p == "/admin/art_hits":
+            return self.send(ART_HITS)
+        if p == "/logo/100.png":
+            return self.send(None, raw=png(40, 30, (0, 200, 0, 255)), ctype="image/png")
+        if p == "/logo/600.jpg":
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.jpg"), "rb") as f:
+                return self.send(None, raw=f.read(), ctype="image/jpeg")
         q = dict(kv.split("=", 1) for kv in qs.split("&") if "=" in kv)
         if p == "/v1/games/1/version-types":
             return self.send({"data": [{"id": 517, "name": "WoW Retail", "slug": "wow_retail"},

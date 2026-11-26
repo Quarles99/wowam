@@ -1,6 +1,7 @@
 export NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost
 cd "$(dirname "$0")"; ROOT="$(cd .. && pwd)"
 export WOWAM_API_BASE=http://127.0.0.1:8765 WOWAM_API_KEY=TESTKEY
+export WOWAM_ART_BASE=http://127.0.0.1:8765/art/  # the GUI's Warcraft textures come from the mock too
 export XDG_CONFIG_HOME=$(mktemp -d); H=$XDG_CONFIG_HOME/h
 export WOWAM_CONFIG_DIR="$XDG_CONFIG_HOME/wowam"  # never touch the real config
 W="python3 $ROOT/wowam.py"

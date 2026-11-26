@@ -69,7 +69,7 @@ To manage your retail install as well, add `--addons-dir ".../_retail_/Interface
 | `wowam gui` | Open the graphical manager |
 | `wowam shortcut` | Put a desktop shortcut that opens the graphical manager |
 | `wowam self-update` | Check for a newer wowam (`--check` only reports; with the packaged exe it installs it after asking, or with `--yes`) |
-| `wowam config --theme dark` | GUI colors: `auto` (follows your system's dark/light setting, the default), `light` or `dark`. Also in the GUI's Settings |
+| `wowam config --theme dark` | GUI look: `warcraft` (the default: the classic WoW UI art, fetched once from a mirror and cached, with addon icons in the WoW icon frame), or plain `auto` (follows your system's dark/light setting), `light` or `dark`. Also in the GUI's Settings |
 
 Some API keys can't search by name, and CurseForge then answers 403. wowam then searches the 500 most popular addons itself, which covers nearly everything people look for. For a less popular addon, use `wowam browse` or install by numeric project ID
 (shown as "Project ID" on the addon's CurseForge page), for example `wowam install 18808`.

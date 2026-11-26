@@ -3,6 +3,7 @@ cd "$(dirname "$0")"; ROOT="$(cd .. && pwd)"
 set -u
 export NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost
 export WOWAM_API_BASE=http://127.0.0.1:8765 WOWAM_API_KEY=TESTKEY WOWAM_GITHUB_API=http://127.0.0.1:8765
+export WOWAM_ART_BASE=http://127.0.0.1:8765/art/  # the GUI's Warcraft textures come from the mock too
 export XDG_CONFIG_HOME=$(mktemp -d); export WOWAM_CONFIG_DIR="$XDG_CONFIG_HOME/wowam"  # never touch the real config
 W="python3 $ROOT/wowam.py"
 G=$(mktemp -d); A="$G/World of Warcraft/_retail_/Interface/AddOns"; mkdir -p "$A"
@@ -150,6 +151,13 @@ $W config --api-key '$2a$10$short' 2>&1 | tee /tmp/ky4.txt
 ok "a truncated key is flagged with the quoting advice" 'grep -q "single quotes" /tmp/ky4.txt'
 WOWAM_API_KEY=nope $W check 2>&1 | tee /tmp/ky5.txt
 ok "a rejected key's error says why" 'grep -q "403" /tmp/ky5.txt && grep -q "doesn.t look like the usual" /tmp/ky5.txt'
+
+echo "--- Warcraft look: art, icons, frog"
+python3 test_art.py | tee /tmp/art.txt
+ok "image codecs, texture cache, addon icons" 'grep -q "^ok" /tmp/art.txt'
+python3 test_gui_art.py | tee /tmp/ga.txt
+ok "GUI: Warcraft theme, list icons, frog counter" 'grep -qE "^(ok|skip)" /tmp/ga.txt'
+ok "default theme is warcraft" 'python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import wowam; print(wowam.DEFAULT_CONFIG[\"theme\"])" "$ROOT" | grep -q warcraft'
 
 echo "--- theme"
 $W config --theme dark >/dev/null
