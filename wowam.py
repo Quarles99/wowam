@@ -528,7 +528,7 @@ class Manager:
         """Locate an installed addon by mod id, slug, name or folder name."""
         ref_l = ref.lower()
         for mid, e in self.installed.items():
-            if ref_l in (mid, e.get("slug", "").lower(), e.get("name", "").lower()) or \
+            if ref_l in (mid.lower(), e.get("slug", "").lower(), e.get("name", "").lower()) or \
                ref_l in (f.lower() for f in e.get("folders", [])):
                 return mid, e
         matches = [(m, e) for m, e in self.installed.items() if ref_l in e.get("name", "").lower()]

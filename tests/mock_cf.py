@@ -92,8 +92,8 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.authed(): return
         p, _, qs = self.path.partition("?")
-        m = re.fullmatch(r"/repos/(acme/\w+)/releases/latest", p)
-        if m: return self.send(gh_release(m[1]))
+        m = re.fullmatch(r"/repos/(acme/\w+)/releases/latest", p, re.I)  # GitHub ignores case in repo names
+        if m: return self.send(gh_release(m[1].lower()))
         m = re.fullmatch(r"/gh/(\w+)/([^/]+)/(wowam\.exe(?:\.sha256)?)", p)
         if m:
             repo = "acme/" + m[1]

@@ -466,7 +466,22 @@ class App:
         paths = filedialog.askopenfilenames(title="Pick the downloaded addon zip(s)",
                                             filetypes=[("Addon zip", "*.zip"), ("All files", "*.*")])
         if paths:
-            self.run_bg("Installing from file", lambda: [self.mgr.install_local(p, delete_zip=True) for p in paths])
+            self._install_zips(paths)
+
+    def _install_zips(self, paths):
+        """Install hand-downloaded zips, then re-check so their "Update available" rows clear."""
+        def work():
+            for p in paths:
+                try:
+                    self.mgr.install_local(p, delete_zip=True)
+                except wowam.WowamError as e:  # one bad zip shouldn't stop the rest
+                    self.log(f"! {os.path.basename(p)}: {e}")
+            return self.mgr.check_updates()  # what is still outdated after installing
+
+        def done(pending):
+            self.pending = {p["id"]: p for p in pending}
+            self.manual_refresh()
+        self.run_bg("Installing from file", work, done)
 
     def open_manual(self):
         """Addons whose authors block third-party downloads: open each file's page, then install the zip here."""
@@ -538,21 +553,8 @@ class App:
     def manual_install(self):
         paths = filedialog.askopenfilenames(parent=self.manual_win, title="Pick the downloaded addon zip(s)",
                                             filetypes=[("Addon zip", "*.zip"), ("All files", "*.*")])
-        if not paths or self.busy:
-            return
-
-        def work():
-            for p in paths:
-                try:
-                    self.mgr.install_local(p, delete_zip=True)
-                except wowam.WowamError as e:  # one bad zip shouldn't stop the rest
-                    self.log(f"! {os.path.basename(p)}: {e}")
-            return self.mgr.check_updates()  # what is still outdated after installing
-
-        def done(pending):
-            self.pending = {p["id"]: p for p in pending}
-            self.manual_refresh()
-        self.run_bg("Installing from file", work, done)
+        if paths and not self.busy:
+            self._install_zips(paths)
 
     def _install_refs(self, refs):
         """Worker-thread install; a blocked addon opens its CurseForge page for a manual download."""

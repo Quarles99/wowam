@@ -87,6 +87,9 @@ mkzip "$M/del-bad.zip" 1.0 ""; $W install-file "$M/del-bad.zip" --delete-zip >/d
 ok "--delete-zip keeps a zip that failed to install" '[ -f "$M/del-bad.zip" ]'
 mkzip "$M/del-good.zip" 2.0 300; $W install-file "$M/del-good.zip" --delete-zip >/dev/null
 ok "--delete-zip removes the zip after a successful install" '[ ! -f "$M/del-good.zip" ] && grep -q "2.0" "$A/NoDist/NoDist.toc"'
+mkzip "$M/3002.zip" 2.1 300; python3 test_gui_manual.py "$M/3002.zip" | tee /tmp/gm.txt
+ok "GUI Install from file clears the update-available row" 'grep -qE "^(ok|skip)" /tmp/gm.txt'
+mkzip "$M/del-good.zip" 2.0 300; $W install-file "$M/del-good.zip" >/dev/null   # back to the old version
 python3 - "$M/site-only.zip" <<'PY'
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "w") as z:
@@ -111,6 +114,10 @@ $W install https://github.com/acme/ghaddon >/dev/null
 ok "github.com URL accepted by install" '$W list | grep -ci ghaddon | grep -q 1'
 $W remove "gh:acme/ghaddon"
 ok "github addon removable" '[ ! -d "$A/GhAddon" ]'
+$W install --github Acme/GhAddon >/dev/null   # mixed-case repo, like DeadlyBossMods/DeadlyBossMods
+curl -s -XPOST localhost:8765/admin/gh_tag -d '{"repo":"acme/ghaddon","tag":"v1.2"}' >/dev/null
+ok "mixed-case github id can be updated by its id (GUI Update selected)" '$W update "gh:Acme/GhAddon" | grep -q "Updated 1" && grep -q "v1.2" "$A/GhAddon/GhAddon.toc"'
+$W remove "gh:Acme/GhAddon" >/dev/null
 $W install --github acme/ghaddon >/dev/null
 python3 - "$M/gh-as-cf.zip" <<'PY'
 import sys, zipfile
