@@ -838,7 +838,7 @@ def _hex(rgb) -> str:
     return "#%02x%02x%02x" % tuple(rgb[:3])
 
 
-def build_kit(art: dict, button_h: int = 22, edge: int = 24) -> dict:
+def build_kit(art: dict, button_h: int = 22, edge: int = 24, row_h: int = 34) -> dict:
     """Every image the Warcraft theme needs. They keep their transparency: Tk blends a photo's alpha over
     whatever the widget drew underneath, which here is a tiled texture (like every panel in the game)."""
     k = {}
@@ -849,8 +849,11 @@ def build_kit(art: dict, button_h: int = 22, edge: int = 24) -> dict:
     k["bg_color"], k["list_color"] = _hex(k["bg"].average()), _hex(k["list"].average())
     k["parchment_color"] = _hex(k["parchment"].average())
     k["panel"] = backdrop(art, edge, k["list"].scale(10 * edge, 10 * edge), center=10 * edge)  # whole tiles
-    k["sel"] = Image(8, 8, fill=(255, 200, 0, 72))  # the gold glow of a selected quest-log line
-    k["clear"] = Image(8, 8)
+    # list rows: one transparent pixel (rows stay see-through), and for a selected row the gold glow of a
+    # quest-log line, as one image wider than any screen. Never a small tile: Tk alpha-blends each tile drawn,
+    # and an 8px tile across every row made scrolling ~50x slower (650 ms a step).
+    k["clear"] = Image(1, 1)
+    k["sel"] = Image(3840, row_h, fill=(255, 200, 0, 72))
 
     outline = bezel_mask(art["button_up"].crop_frac(0, 0.625, 0, 0.6875))
 

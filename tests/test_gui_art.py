@@ -19,8 +19,20 @@ except Exception as e:  # headless Linux without a display
     sys.exit(0)
 
 wowam.check_self_update = lambda *a, **k: None  # no network beyond the mock
-wowam.update_config_file(theme="warcraft", frogs=0)
+problems = []
+
+# a config from before 1.5 that saved theme "auto" (the old default) moves to the Warcraft look, once
+raw = json.loads(wowam.CONFIG_PATH.read_text(encoding="utf-8"))
+raw.pop("look_upgraded", None)
+raw.update(theme="auto", frogs=0)
+wowam.CONFIG_PATH.write_text(json.dumps(raw), encoding="utf-8")
 app = wowam_gui.App(root)
+saved = json.loads(wowam.CONFIG_PATH.read_text(encoding="utf-8"))
+if app.theme_name != "warcraft" or saved.get("theme") != "warcraft" or not saved.get("look_upgraded"):
+    problems.append(f"old 'auto' config not moved to the Warcraft look: {app.theme_name}, {saved.get('theme')}")
+again = {"theme": "auto", "look_upgraded": True}
+if wowam_gui.upgrade_look(again) or again["theme"] != "auto":
+    problems.append("a later choice of 'auto' was overridden")
 
 
 def pump_until(cond, seconds=30):
@@ -32,7 +44,6 @@ def pump_until(cond, seconds=30):
     return cond()
 
 
-problems = []
 if not pump_until(lambda: app.wow_theme_ready and not app.busy):
     problems.append("Warcraft theme never loaded")
 elif wowam_gui.ttk.Style().theme_use() != "wowam-warcraft":

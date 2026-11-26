@@ -42,6 +42,20 @@ PALETTES = {
 NAMED_FONTS = ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkMenuFont", "TkCaptionFont", "TkTooltipFont")
 
 
+def upgrade_look(cfg: dict) -> bool:
+    """Once per config: move a saved theme of "auto" to the Warcraft look. Before 1.5, "auto" was the default
+    and Settings saved it with everything else, so it rarely means anyone chose it. A later choice of "auto"
+    sticks (look_upgraded marks the config as done). Returns True when it switched."""
+    if cfg.get("look_upgraded"):
+        return False
+    switch = str(cfg.get("theme") or "").lower() == "auto"
+    cfg["look_upgraded"] = True
+    if switch:
+        cfg["theme"] = "warcraft"
+    wowam.update_config_file(look_upgraded=True, **({"theme": "warcraft"} if switch else {}))
+    return switch
+
+
 def wow_font_family(root, addons_dir=None) -> str:
     """WoW's UI font, Friz Quadrata: installed on the system, or a FRIZQT__.TTF found in a WoW folder, an addon
     or picked in Settings (loaded for this process only). Else the closest classic serif this system has."""
@@ -78,6 +92,7 @@ class App:
     def __init__(self, root):
         self.root = root
         self.cfg = wowam.load_config()
+        upgrade_look(self.cfg)
         self.theme_name = None
         self.pal = PALETTES["light"]
         self.mgr: wowam.Manager | None = None
@@ -307,7 +322,7 @@ class App:
                 if wowam_art.ensure_art(log=self.log):
                     art = wowam_art.load_art()
                     if art:
-                        kit = wowam_art.build_kit(art, button_h=button_h)
+                        kit = wowam_art.build_kit(art, button_h=button_h, row_h=ICON + 6)
             except Exception as e:  # never let the look break the app
                 self.log(f"! Couldn't build the Warcraft look: {e!r}")
             self.ui(lambda: self._art_ready(kit))
@@ -380,7 +395,8 @@ class App:
         s.layout("Treeview", [("Wow.listbg", {"sticky": "nswe", "children": [
             ("Treeview.padding", {"sticky": "nswe", "children": [("Treeview.treearea", {"sticky": "nswe"})]})]})])
         # rows are see-through; a selected one gets the gold quest-log glow
-        s.element_create("Wow.row", "image", im["clear"], ("selected", im["sel"]), sticky="nsew")
+        # drawn once per row at its left edge (sticky "w"), never tiled: see build_kit
+        s.element_create("Wow.row", "image", im["clear"], ("selected", im["sel"]), sticky="w")
         s.layout("Treeview.Row", [("Wow.row", {"sticky": "nswe"})])
         s.layout("Heading", [("Wow.bg", {"sticky": "nswe"}), ("Treeheading.border", {"sticky": "nswe", "children": [
             ("Treeheading.padding", {"sticky": "nswe", "children": [
