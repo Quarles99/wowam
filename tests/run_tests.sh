@@ -75,6 +75,10 @@ mkzip "$M/other-name.zip" 2.1 300; $W install-file "$M/other-name.zip"
 ok "unmatched zip name but current version -> no nag" '$W check | grep -q "up to date"'
 cp "$M/3002.zip" "$M/3002(1).zip"; mkzip "$M/3002(1).zip" 2.1 300; $W install-file "$M/3002(1).zip" >/dev/null
 ok "browser-renamed duplicate download still matches its file" '$W check | grep -q "up to date"'
+curl -s -XPOST localhost:8765/admin/publish -d '{"mod":300,"file":3003}' >/dev/null
+mkzip "$M/3003.zip" 2.1-3-gabc 300; $W install-file "$M/3003.zip" >/dev/null
+ok "hand-installed alpha newer than the latest release is not flagged" '$W check | grep -q "up to date"'
+mkzip "$M/3002.zip" 2.1 300; $W install-file "$M/3002.zip" >/dev/null   # back on the release
 mkzip "$M/untagged.zip" 1.0 ""; $W install-file "$M/untagged.zip" 2>&1 | tee /tmp/ut.txt
 ok "untagged zip asks for --mod" 'grep -q -- "--mod" /tmp/ut.txt'
 $W install-file "$M/untagged.zip" --mod nodist >/dev/null

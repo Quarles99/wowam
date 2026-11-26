@@ -852,7 +852,8 @@ class Manager:
                 if _version_in(entry.get("toc_version", ""), f"{latest.get('displayName')} {latest.get('fileName')}"):
                     entry["file_id"], synced = fid, True
                     continue
-            if fid != entry.get("file_id"):
+            # Only a newer file is an update: one installed by hand may be an alpha newer than the channel's latest.
+            if entry.get("file_id") is None or fid > entry["file_id"]:
                 out.append({"id": mid, "entry": entry, "mod": mod, "latest_file_id": fid, "blocked": blocked,
                             "latest_version": latest.get("displayName") or latest.get("fileName") or str(fid)})
         for key, entry in list(self.installed.items()):

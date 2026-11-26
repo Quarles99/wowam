@@ -26,6 +26,7 @@ FILES = {
     2001: dict(modId=200, displayName="LibDep r5", releaseType=1, folders=[("LibDep", "r5")], deps=[]),
     3001: dict(modId=300, displayName="NoDist 2.0", releaseType=1, folders=[("NoDist", "2.0")], deps=[], nodist=True),
     3002: dict(modId=300, displayName="NoDist 2.1", releaseType=1, folders=[("NoDist", "2.1")], deps=[], nodist=True),
+    3003: dict(modId=300, displayName="NoDist 2.1-3-gabc", releaseType=3, folders=[("NoDist", "2.1-3-gabc")], deps=[], nodist=True),
     4001: dict(modId=400, displayName="OldAddon 9.9", releaseType=1, folders=[("OldAddon", "9.9")], deps=[]),
     6001: dict(modId=600, displayName="Questie retail", releaseType=1, folders=[("Questie", "retail")], deps=[]),
     6002: dict(modId=600, displayName="Questie forever", releaseType=1, folders=[("Questie", "forever")], deps=[], flavor=88888),
