@@ -370,7 +370,7 @@ class App:
                 (f"{part}.focus", {"side": "left", "sticky": "w", "children": [
                     (f"{part}.label", {"sticky": "nswe"})]})]})])
         # the scrollbar finds its parts by the last word of their names: thumb, uparrow, downarrow
-        s.element_create("Wow.thumb", "image", im["thumb"], sticky="")
+        s.element_create("Wow.thumb", "image", im["thumb"], border=(0, 6, 0, 6), height=16, sticky="nsew")
         s.element_create("Wow.uparrow", "image", im["arrow_up"], sticky="")
         s.element_create("Wow.downarrow", "image", im["arrow_down"], sticky="")
         s.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [

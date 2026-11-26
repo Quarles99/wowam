@@ -882,7 +882,9 @@ def build_kit(art: dict, button_h: int = 22, edge: int = 24, row_h: int = 34) ->
     def tight(im, w, h):  # crop to the drawn pixels (these textures sit in a corner of a 32x32 canvas)
         box = im.bbox() or (0, 0, im.w, im.h)
         return im.crop(*box).scale(w, h)
-    k["thumb"] = tight(art["knob"], 16, 15)
+    # the scroll thumb stretches over its whole range (a fixed knob centred in it never reached the ends):
+    # bevelled 6px caps, and a long middle so ttk repeats it only a few times (it has transparent edges)
+    k["thumb"] = three_slice_v(tight(art["knob"], 16, 15), 132, 6)
     for name in ("arrow_up", "arrow_down"):
         k[name] = tight(art[name], 16, 15)
 
